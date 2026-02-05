@@ -50,30 +50,38 @@ face_cascade = cv2.CascadeClassifier(
     cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
 )
 
-def extract_face_gray(gray_img):
-    faces = face_cascade.detectMultiScale(gray_img, 1.3, 5)
+def extract_face_gray(gray):
+    faces = face_cascade.detectMultiScale(gray, 1.3, 5)
     if len(faces) == 0:
         return None
     x, y, w, h = faces[0]
-    return cv2.resize(gray_img[y:y+h, x:x+w], (200, 200))
+    return cv2.resize(gray[y:y+h, x:x+w], (200, 200))
 
 def extract_face_from_path(path):
+    if not os.path.exists(path):
+        return None, "Stored image not found"
+
     img = cv2.imread(path)
+    if img is None:
+        return None, "Failed to load stored image"
+
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    return extract_face_gray(gray)
+    face = extract_face_gray(gray)
+    return face, None
 
 def extract_face_from_np(img_np):
     gray = cv2.cvtColor(img_np, cv2.COLOR_BGR2GRAY)
-    return extract_face_gray(gray)
+    face = extract_face_gray(gray)
+    return face
 
 def match_faces(stored_path, test_np):
-    stored_face = extract_face_from_path(stored_path)
-    test_face = extract_face_from_np(test_np)
+    stored_face, err = extract_face_from_path(stored_path)
+    if err:
+        return False, err
 
-    if stored_face is None:
-        return False, "No face in registered image"
+    test_face = extract_face_from_np(test_np)
     if test_face is None:
-        return False, "No face detected"
+        return False, "No face detected in input image"
 
     recognizer = cv2.face.LBPHFaceRecognizer_create()
     recognizer.train([stored_face], np.array([0]))
@@ -113,7 +121,7 @@ def trigger_emergency(lat, lon, lang):
         client.messages.create(body=msg, from_=TWILIO_PHONE, to=PARENT_PHONE)
 
         speech = (
-            f"Emergency alert. {name} has triggered SOS. Location sent."
+            f"Emergency alert. {name} has triggered SOS."
             if lang == "English"
             else f"आपातकालीन अलर्ट। {name} ने एसओएस दबाया है।"
         )
@@ -186,26 +194,19 @@ with tab2:
 with tab3:
     st.subheader("AI Face Detection & Matching")
 
-    mode = st.radio(
-        "Choose Image Source",
-        ["📷 Live Camera", "🖼️ Upload Image"]
-    )
-
+    mode = st.radio("Choose Image Source", ["📷 Live Camera", "🖼️ Upload Image"])
     test_np = None
 
     if mode == "📷 Live Camera":
-        cam_img = st.camera_input("Capture Image")
-        if cam_img:
-            test_np = np.array(Image.open(cam_img).convert("RGB"))
+        cam = st.camera_input("Capture Image")
+        if cam:
+            test_np = np.array(Image.open(cam).convert("RGB"))
             st.image(test_np, width=300)
 
     if mode == "🖼️ Upload Image":
-        upload_img = st.file_uploader(
-            "Upload CCTV / Gallery Image",
-            ["jpg", "png", "jpeg"]
-        )
-        if upload_img:
-            test_np = np.array(Image.open(upload_img).convert("RGB"))
+        upl = st.file_uploader("Upload Image", ["jpg", "png", "jpeg"])
+        if upl:
+            test_np = np.array(Image.open(upl).convert("RGB"))
             st.image(test_np, width=300)
 
     if test_np is not None:
