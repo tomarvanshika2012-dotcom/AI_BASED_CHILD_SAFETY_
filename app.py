@@ -1,6 +1,5 @@
 import streamlit as st
 import sqlite3
-import os
 import uuid
 from PIL import Image
 from datetime import datetime
@@ -8,22 +7,19 @@ from twilio.rest import Client
 from streamlit_geolocation import streamlit_geolocation
 import cv2
 import numpy as np
+import io
 
 # ================== CONFIG ==================
 st.set_page_config(page_title="SafeGuard Child Safety AI", page_icon="🛡️", layout="centered")
 
-UPLOAD_DIR = "uploads"
-DB_FILE = "child_safety.db"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-
 # ================== TWILIO ==================
-TWILIO_SID = "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-TWILIO_AUTH_TOKEN = "xxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+TWILIO_SID = "ACa12e602647785572ebaf765659d26d23"
+TWILIO_AUTH_TOKEN = "0e150a10a98b74ddc7d57e44fa3e01c6"
 TWILIO_PHONE = "+14176076960"
 PARENT_PHONE = "+918130631551"
 
 # ================== DATABASE ==================
-conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+conn = sqlite3.connect("child_safety.db", check_same_thread=False)
 cursor = conn.cursor()
 
 cursor.execute("""
@@ -33,7 +29,7 @@ CREATE TABLE IF NOT EXISTS child_registry (
     age INTEGER,
     clothing_color TEXT,
     lost_location TEXT,
-    image_path TEXT,
+    image_blob BLOB,
     created_at TEXT
 )
 """)
@@ -57,29 +53,22 @@ def extract_face_gray(gray):
     x, y, w, h = faces[0]
     return cv2.resize(gray[y:y+h, x:x+w], (200, 200))
 
-def extract_face_from_path(path):
-    if not os.path.exists(path):
-        return None, "Stored image not found"
-
-    img = cv2.imread(path)
-    if img is None:
-        return None, "Failed to load stored image"
-
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    face = extract_face_gray(gray)
-    return face, None
+def blob_to_face(blob):
+    img = Image.open(io.BytesIO(blob)).convert("RGB")
+    np_img = np.array(img)
+    gray = cv2.cvtColor(np_img, cv2.COLOR_BGR2GRAY)
+    return extract_face_gray(gray)
 
 def extract_face_from_np(img_np):
     gray = cv2.cvtColor(img_np, cv2.COLOR_BGR2GRAY)
-    face = extract_face_gray(gray)
-    return face
+    return extract_face_gray(gray)
 
-def match_faces(stored_path, test_np):
-    stored_face, err = extract_face_from_path(stored_path)
-    if err:
-        return False, err
-
+def match_faces(stored_blob, test_np):
+    stored_face = blob_to_face(stored_blob)
     test_face = extract_face_from_np(test_np)
+
+    if stored_face is None:
+        return False, "No face in registered image"
     if test_face is None:
         return False, "No face detected in input image"
 
@@ -95,7 +84,7 @@ def match_faces(stored_path, test_np):
 # ================== HELPERS ==================
 def get_latest_child():
     cursor.execute("""
-        SELECT child_name, age, clothing_color, lost_location, image_path
+        SELECT child_name, age, clothing_color, lost_location, image_blob
         FROM child_registry
         ORDER BY created_at DESC LIMIT 1
     """)
@@ -159,18 +148,16 @@ with tab1:
         if not all([name, clothes, last_loc, photo]):
             st.error("All fields required")
         else:
+            image_bytes = photo.read()
             cid = str(uuid.uuid4())
-            img = Image.open(photo).convert("RGB")
-            path = os.path.join(UPLOAD_DIR, f"{cid}.jpg")
-            img.save(path)
 
             cursor.execute("""
             INSERT INTO child_registry VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (cid, name, age, clothes, last_loc, path, datetime.now().isoformat()))
+            """, (cid, name, age, clothes, last_loc, image_bytes, datetime.now().isoformat()))
             conn.commit()
 
-            st.success("Child Registered Successfully")
-            st.image(img, width=200)
+            st.success("Child Registered Securely")
+            st.image(Image.open(io.BytesIO(image_bytes)), width=200)
 
 # ================== TAB 2 ==================
 with tab2:
@@ -212,8 +199,8 @@ with tab3:
     if test_np is not None:
         child = get_latest_child()
         if child:
-            _, _, _, _, stored_path = child
-            matched, msg = match_faces(stored_path, test_np)
+            _, _, _, _, blob = child
+            matched, msg = match_faces(blob, test_np)
 
             if matched:
                 st.success(f"✅ {msg}")
