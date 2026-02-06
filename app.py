@@ -13,7 +13,7 @@ UPLOAD_DIR = "uploads"
 DB_FILE = "child_safety.db"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# ================== TWILIO (TWO ACCOUNTS) ==================
+# ================== TWILIO CONFIG (REPLACE THESE) ==================
 TWILIO1_SID = "ACa12e602647785572ebaf765659d26d23"
 TWILIO1_AUTH = "0e150a10a98b74ddc7d57e44fa3e01c6"
 TWILIO1_PHONE = "+14176076960"
@@ -21,6 +21,8 @@ TWILIO1_PHONE = "+14176076960"
 TWILIO2_SID = "ACc9b9941c778de30e2ed7ba57f87cdfbc"
 TWILIO2_AUTH = "b524116dc4b14af314a5919594df9121"
 TWILIO2_PHONE = "+15075195618"
+
+WHATSAPP_FROM = "whatsapp:+14155238886"  # Twilio WhatsApp sandbox
 
 EMERGENCY_CONTACTS = [
     "+918130631551",
@@ -48,31 +50,10 @@ with st.sidebar:
     st.header("🚨 Emergency Network")
     voice_lang = st.radio("Call Language", ["English", "Hindi"])
 
-# ================== FACE DETECTION ==================
+# ================== FACE DETECTION (OPTIONAL) ==================
 face_cascade = cv2.CascadeClassifier(
     cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
 )
-
-def match_faces(path, img_np):
-    img = cv2.imread(path)
-    if img is None:
-        return False, "Stored image missing"
-    g1 = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    g2 = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
-
-    f1 = face_cascade.detectMultiScale(g1, 1.3, 5)
-    f2 = face_cascade.detectMultiScale(g2, 1.3, 5)
-
-    if len(f1) == 0 or len(f2) == 0:
-        return False, "Face not detected"
-
-    x,y,w,h = f1[0]
-    a = cv2.resize(g1[y:y+h, x:x+w], (200,200))
-    x,y,w,h = f2[0]
-    b = cv2.resize(g2[y:y+h, x:x+w], (200,200))
-
-    diff = np.mean(np.abs(a - b))
-    return (diff < 40, f"Score: {diff:.2f}")
 
 # ================== HELPERS ==================
 def get_latest_child():
@@ -81,15 +62,21 @@ def get_latest_child():
 
 def send_alert(client, from_no, to_no, msg, speech, lang):
     try:
-        # ---- SMS (FIXED) ----
-        sms = client.messages.create(
+        # SMS
+        client.messages.create(
             body=msg,
             from_=from_no,
             to=to_no
         )
-        print("SMS SID:", sms.sid)
 
-        # ---- CALL ----
+        # WhatsApp
+        client.messages.create(
+            body=msg,
+            from_=WHATSAPP_FROM,
+            to=f"whatsapp:{to_no}"
+        )
+
+        # Call
         twiml = f"""
         <Response>
             <Say voice="alice" language="{lang}">
@@ -97,13 +84,11 @@ def send_alert(client, from_no, to_no, msg, speech, lang):
             </Say>
         </Response>
         """
-        call = client.calls.create(
+        client.calls.create(
             twiml=twiml,
             from_=from_no,
             to=to_no
         )
-        print("CALL SID:", call.sid)
-
     except Exception as e:
         print("TWILIO ERROR:", e)
 
@@ -121,14 +106,14 @@ Name: {name}
 Age: {age}
 Clothes: {clothes}
 Last Seen: {last_loc}
-Location: {maps}
+Live Location: {maps}
 Time: {time_now}
 """
 
     if lang_choice == "English":
-        speech, lang = f"{name} has triggered an SOS alert.", "en-US"
+        speech, lang = f"Emergency alert. {name} needs immediate help.", "en-US"
     else:
-        speech, lang = f"{name} ने एस ओ एस अलर्ट भेजा है।", "hi-IN"
+        speech, lang = f"आपातकालीन चेतावनी। {name} को तुरंत मदद चाहिए।", "hi-IN"
 
     c1 = Client(TWILIO1_SID, TWILIO1_AUTH)
     c2 = Client(TWILIO2_SID, TWILIO2_AUTH)
@@ -159,7 +144,7 @@ with tab1:
         age = st.number_input("Age", 0, 18)
         clothes = st.text_input("Clothing Color")
         last_loc = st.text_area("Last Seen Location")
-        photo = st.file_uploader("Photo", ["jpg","png"])
+        photo = st.file_uploader("Photo", ["jpg", "png"])
         ok = st.form_submit_button("Register")
 
     if ok and photo:
@@ -175,14 +160,14 @@ with tab1:
         st.success("Child Registered")
 
 with tab2:
-    st.warning("SOS sends SMS + CALL from BOTH Twilio numbers")
+    st.warning("SOS sends SMS + CALL + WhatsApp from BOTH Twilio numbers")
     loc = streamlit_geolocation() or {}
     if st.button("🆘 TRIGGER SOS"):
         if loc.get("latitude"):
             with st.spinner("Sending alerts..."):
                 res = trigger_sos(loc["latitude"], loc["longitude"], voice_lang)
             if res is True:
-                st.success("SMS + CALL sent successfully")
+                st.success("SMS + Call + WhatsApp sent successfully")
             else:
                 st.error(res)
         else:
