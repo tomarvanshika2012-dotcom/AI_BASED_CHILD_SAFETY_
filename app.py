@@ -2,6 +2,7 @@ import streamlit as st
 import sqlite3
 import os
 import uuid
+import threading
 from PIL import Image
 from datetime import datetime
 from twilio.rest import Client
@@ -14,13 +15,20 @@ st.set_page_config(page_title="SafeGuard Child Safety AI", page_icon="🛡️", 
 
 UPLOAD_DIR = "uploads"
 DB_FILE = "child_safety.db"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+if not os.path.exists(UPLOAD_DIR):
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# ================== TWILIO ==================
-TWILIO_SID = "ACa12e602647785572ebaf765659d26d23"
-TWILIO_AUTH_TOKEN = "0e150a10a98b74ddc7d57e44fa3e01c6"
-TWILIO_PHONE = "+14176076960"
-PARENT_PHONE = "+918130631551"
+# ================== TWILIO CONFIG ==================
+TWILIO_SID = "ACc9b9941c778de30e2ed7ba57f87cdfbc"
+TWILIO_AUTH_TOKEN = "b524116dc4b14af314a5919594df9121"
+TWILIO_PHONE = "+15075195618"
+
+# IMPORTANT: Both numbers MUST be verified at:
+# https://console.twilio.com/us1/develop/phone-numbers/manage/verified
+EMERGENCY_CONTACTS = [
+    "+918130631551", 
+    "+917678495189" 
+]
 
 # ================== DATABASE ==================
 conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -28,196 +36,136 @@ cursor = conn.cursor()
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS child_registry (
-    id TEXT PRIMARY KEY,
-    child_name TEXT,
-    age INTEGER,
-    clothing_color TEXT,
-    lost_location TEXT,
-    image_path TEXT,
-    created_at TEXT
+    id TEXT PRIMARY KEY, child_name TEXT, age INTEGER,
+    clothing_color TEXT, lost_location TEXT, image_path TEXT, created_at TEXT
 )
 """)
 conn.commit()
 
-# ================== SIDEBAR ==================
-with st.sidebar:
-    st.header("🚨 Emergency Network")
-    st.success("👨‍👩‍👧 Parent Connected")
-    voice_lang = st.radio("Voice Language", ["English", "Hindi"])
-
 # ================== FACE AI ==================
-face_cascade = cv2.CascadeClassifier(
-    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-)
-
-def extract_face_gray(gray_img):
-    faces = face_cascade.detectMultiScale(gray_img, 1.3, 5)
-    if len(faces) == 0:
-        return None
-    x, y, w, h = faces[0]
-    return cv2.resize(gray_img[y:y+h, x:x+w], (200, 200))
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 
 def extract_face_from_path(path):
     img = cv2.imread(path)
+    if img is None: return None
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    return extract_face_gray(gray)
+    faces = face_cascade.detectMultiScale(gray, 1.3, 5)
+    if len(faces) == 0: return None
+    x, y, w, h = faces[0]
+    return cv2.resize(gray[y:y+h, x:x+w], (200, 200))
 
 def extract_face_from_np(img_np):
-    gray = cv2.cvtColor(img_np, cv2.COLOR_BGR2GRAY)
-    return extract_face_gray(gray)
+    img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    faces = face_cascade.detectMultiScale(gray, 1.3, 5)
+    if len(faces) == 0: return None
+    x, y, w, h = faces[0]
+    return cv2.resize(gray[y:y+h, x:x+w], (200, 200))
 
 def match_faces(stored_path, test_np):
     stored_face = extract_face_from_path(stored_path)
     test_face = extract_face_from_np(test_np)
-
-    if stored_face is None:
-        return False, "No face in registered image"
-    if test_face is None:
-        return False, "No face detected"
-
-    recognizer = cv2.face.LBPHFaceRecognizer_create()
-    recognizer.train([stored_face], np.array([0]))
-
-    _, confidence = recognizer.predict(test_face)
-
-    if confidence < 70:
-        return True, f"Match Found (Confidence: {confidence:.2f})"
-    return False, f"No Match (Confidence: {confidence:.2f})"
+    if stored_face is None or test_face is None:
+        return False, "Face not detected"
+    try:
+        recognizer = cv2.face.LBPHFaceRecognizer_create()
+        recognizer.train([stored_face], np.array([0]))
+        _, conf = recognizer.predict(test_face)
+        return (True, f"Match Found ({conf:.2f})") if conf < 75 else (False, f"No Match ({conf:.2f})")
+    except: return False, "LBPH Error: Install opencv-contrib-python-headless"
 
 # ================== HELPERS ==================
 def get_latest_child():
-    cursor.execute("""
-        SELECT child_name, age, clothing_color, lost_location, image_path
-        FROM child_registry
-        ORDER BY created_at DESC LIMIT 1
-    """)
+    cursor.execute("SELECT child_name, age, clothing_color, lost_location, image_path FROM child_registry ORDER BY created_at DESC LIMIT 1")
     return cursor.fetchone()
 
-def trigger_emergency(lat, lon, lang):
+def send_individual_alert(contact, msg_body, t_lang, speech, status_list):
+    """Refined dispatch with explicit error logging for SMS"""
     try:
-        child = get_latest_child()
-        if not child:
-            return "No child registered."
-
-        name, age, clothes, last_loc, _ = child
-        time_now = datetime.now().strftime("%d-%m-%Y | %I:%M %p")
-        maps = f"https://www.google.com/maps?q={lat},{lon}"
-
-        msg = (
-            f"🚨 CHILD SAFETY ALERT 🚨\n"
-            f"Name: {name}\nAge: {age}\nClothes: {clothes}\n"
-            f"Last Location: {last_loc}\nGPS: {maps}\nTime: {time_now}"
-        )
-
         client = Client(TWILIO_SID, TWILIO_AUTH_TOKEN)
-        client.messages.create(body=msg, from_=TWILIO_PHONE, to=PARENT_PHONE)
-
-        speech = (
-            f"Emergency alert. {name} has triggered SOS. Location sent."
-            if lang == "English"
-            else f"आपातकालीन अलर्ट। {name} ने एसओएस दबाया है।"
-        )
-
+        
+        # 1. ATTEMPT SMS
+        sms = client.messages.create(body=msg_body, from_=TWILIO_PHONE, to=contact)
+        status_list.append(f"✅ SMS sent to {contact}")
+        
+        # 2. ATTEMPT CALL
         client.calls.create(
-            twiml=f"<Response><Say>{speech}</Say></Response>",
-            from_=TWILIO_PHONE,
-            to=PARENT_PHONE
+            twiml=f'<Response><Say language="{t_lang}">{speech}</Say></Response>',
+            from_=TWILIO_PHONE, to=contact
         )
-
-        return True
+        status_list.append(f"✅ Call sent to {contact}")
+        
     except Exception as e:
-        return str(e)
+        status_list.append(f"❌ Error for {contact}: {str(e)}")
+
+def trigger_emergency(lat, lon, lang):
+    child = get_latest_child()
+    if not child: return ["No child registered."]
+
+    name, age, clothes, last_loc, _ = child
+    maps_link = f"https://www.google.com/maps?q={lat},{lon}" # Improved URL format
+
+    msg_body = f"🚨 CHILD SAFETY ALERT 🚨\nName: {name}\nAge: {age}\nClothes: {clothes}\nLoc: {maps_link}"
+
+    speech = f"Emergency alert. {name} has triggered SOS." if lang == "English" else f"आपातकालीन अलर्ट। {name} ने मदद मांगी है।"
+    twilio_lang = "en-US" if lang == "English" else "hi-IN"
+
+    status_updates = []
+    threads = []
+    for contact in EMERGENCY_CONTACTS:
+        if "+91XX" not in contact:
+            t = threading.Thread(target=send_individual_alert, args=(contact, msg_body, twilio_lang, speech, status_updates))
+            threads.append(t)
+            t.start()
+
+    for t in threads: t.join()
+    return status_updates
 
 # ================== UI ==================
 st.title("🛡️ SafeGuard Child Safety AI")
+tab1, tab2, tab3 = st.tabs(["👨‍👩‍👧 Parent Registration", "🆘 SOS Emergency", "🧠 AI Face Matching"])
 
-tab1, tab2, tab3 = st.tabs([
-    "👨‍👩‍👧 Parent Registration",
-    "🆘 SOS Emergency",
-    "🧠 AI Face Matching"
-])
-
-# ================== TAB 1 ==================
 with tab1:
     with st.form("register"):
         name = st.text_input("Child Name")
         age = st.number_input("Age", 0, 18)
         clothes = st.text_input("Clothing Color")
-        last_loc = st.text_area("Location Where Child Was Lost")
+        last_loc = st.text_area("Last Seen Location")
         photo = st.file_uploader("Recent Photo", ["jpg", "png", "jpeg"])
-        submit = st.form_submit_button("Register")
+        if st.form_submit_button("Register"):
+            if all([name, clothes, last_loc, photo]):
+                cid = str(uuid.uuid4())
+                path = os.path.join(UPLOAD_DIR, f"{cid}.jpg")
+                Image.open(photo).convert("RGB").save(path)
+                cursor.execute("INSERT INTO child_registry VALUES (?, ?, ?, ?, ?, ?, ?)", (cid, name, age, clothes, last_loc, path, datetime.now().isoformat()))
+                conn.commit()
+                st.success("Registered!")
+            else: st.error("Fields missing")
 
-    if submit:
-        if not all([name, clothes, last_loc, photo]):
-            st.error("All fields required")
-        else:
-            cid = str(uuid.uuid4())
-            img = Image.open(photo).convert("RGB")
-            path = os.path.join(UPLOAD_DIR, f"{cid}.jpg")
-            img.save(path)
-
-            cursor.execute("""
-            INSERT INTO child_registry VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (cid, name, age, clothes, last_loc, path, datetime.now().isoformat()))
-            conn.commit()
-
-            st.success("Child Registered Successfully")
-            st.image(img, width=200)
-
-# ================== TAB 2 ==================
 with tab2:
+    st.sidebar.header("Settings")
+    voice_lang = st.sidebar.radio("Voice Language", ["English", "Hindi"])
     location = streamlit_geolocation()
-    if st.button("🆘 SOS"):
-        if location['latitude'] and location['longitude']:
-            result = trigger_emergency(
-                location['latitude'],
-                location['longitude'],
-                voice_lang
-            )
-            if result is True:
-                st.success("Parent Alerted Successfully")
-                st.balloons()
-            else:
-                st.error(result)
-        else:
-            st.error("Enable location access")
+    if st.button("🆘 TRIGGER SOS"):
+        if location.get('latitude'):
+            results = trigger_emergency(location['latitude'], location['longitude'], voice_lang)
+            for r in results:
+                st.write(r)
+            st.balloons()
+        else: st.error("Location not found.")
 
-# ================== TAB 3 ==================
 with tab3:
-    st.subheader("AI Face Detection & Matching")
+    mode = st.radio("Source", ["📷 Live", "🖼️ Upload"])
+    test_img = None
+    if mode == "📷 Live":
+        cam = st.camera_input("Scanner")
+        if cam: test_img = np.array(Image.open(cam))
+    else:
+        file = st.file_uploader("CCTV Image", ["jpg", "png", "jpeg"])
+        if file: test_img = np.array(Image.open(file))
 
-    mode = st.radio(
-        "Choose Image Source",
-        ["📷 Live Camera", "🖼️ Upload Image"]
-    )
-
-    test_np = None
-
-    if mode == "📷 Live Camera":
-        cam_img = st.camera_input("Capture Image")
-        if cam_img:
-            test_np = np.array(Image.open(cam_img).convert("RGB"))
-            st.image(test_np, width=300)
-
-    if mode == "🖼️ Upload Image":
-        upload_img = st.file_uploader(
-            "Upload CCTV / Gallery Image",
-            ["jpg", "png", "jpeg"]
-        )
-        if upload_img:
-            test_np = np.array(Image.open(upload_img).convert("RGB"))
-            st.image(test_np, width=300)
-
-    if test_np is not None:
+    if test_img is not None:
         child = get_latest_child()
         if child:
-            _, _, _, _, stored_path = child
-            matched, msg = match_faces(stored_path, test_np)
-
-            if matched:
-                st.success(f"✅ {msg}")
-                st.balloons()
-            else:
-                st.error(f"❌ {msg}")
-        else:
-            st.warning("No registered child found.")
+            matched, msg = match_faces(child[4], test_img)
+            st.success(msg) if matched else st.error(msg)
