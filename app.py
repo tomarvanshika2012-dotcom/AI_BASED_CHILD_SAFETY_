@@ -2,18 +2,17 @@ import streamlit as st
 import sqlite3
 import cv2
 import numpy as np
-import os
 from datetime import datetime
 from twilio.rest import Client
 from streamlit_geolocation import streamlit_geolocation
 
 # =========================
-# CONFIG
+# TWILIO CONFIG
 # =========================
 
-TWILIO_SID = "ACa12e602647785572ebaf765659d26d23"
-TWILIO_AUTH_TOKEN = "0e150a10a98b74ddc7d57e44fa3e01c6"
-TWILIO_PHONE = "+14176076960"
+TWILIO_SID = "ACc9b9941c778de30e2ed7ba57f87cdfbc"
+TWILIO_AUTH_TOKEN = "b524116dc4b14af314a5919594df9121"
+TWILIO_PHONE = "+15075195618"
 REGISTERED_PHONE = "+918130631551"
 
 DB_FILE = "child_safety.db"
@@ -29,6 +28,33 @@ st.set_page_config(
 )
 
 # =========================
+# SOS BUTTON STYLE (BIGGER)
+# =========================
+
+st.markdown("""
+<style>
+.sos-btn button {
+    background-color: #ff2b2b;
+    color: white;
+    height: 260px;
+    width: 260px;
+    border-radius: 50%;
+    font-size: 44px;
+    font-weight: bold;
+    border: 12px solid #b30000;
+    box-shadow: 0px 15px 35px rgba(255, 0, 0, 0.45);
+    transition: all 0.2s ease-in-out;
+}
+.sos-btn button:hover {
+    transform: scale(1.05);
+}
+.sos-btn button:active {
+    transform: scale(0.95);
+}
+</style>
+""", unsafe_allow_html=True)
+
+# =========================
 # DATABASE
 # =========================
 
@@ -39,13 +65,13 @@ def init_db():
     c.execute("""
         CREATE TABLE IF NOT EXISTS child (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            age INTEGER NOT NULL,
-            clothing_color TEXT NOT NULL,
-            lost_location TEXT NOT NULL,
-            photo BLOB NOT NULL,
-            face_encoding BLOB NOT NULL,
-            registered_at TEXT NOT NULL
+            name TEXT,
+            age INTEGER,
+            clothing_color TEXT,
+            lost_location TEXT,
+            photo BLOB,
+            face_encoding BLOB,
+            registered_at TEXT
         )
     """)
 
@@ -73,8 +99,7 @@ def extract_face(image):
     if len(faces) == 0:
         return None
     x, y, w, h = faces[0]
-    face = gray[y:y+h, x:x+w]
-    return cv2.resize(face, (200, 200))
+    return cv2.resize(gray[y:y+h, x:x+w], (200, 200))
 
 def compare_faces(f1, f2):
     if f1 is None or f2 is None:
@@ -88,6 +113,7 @@ def compare_faces(f1, f2):
 
 def send_sos(lat, lon, lang):
     client = Client(TWILIO_SID, TWILIO_AUTH_TOKEN)
+
     now = datetime.now().strftime("%d-%m-%Y %I:%M %p")
     maps = f"https://www.google.com/maps?q={lat},{lon}"
 
@@ -98,9 +124,9 @@ def send_sos(lat, lon, lang):
     )
 
     speech = (
-        "Emergency alert! Your child has pressed the SOS button."
+        "Emergency alert. Your child has triggered the SOS system."
         if lang == "English"
-        else "आपातकालीन अलर्ट। आपके बच्चे ने SOS बटन दबाया है।"
+        else "आपातकालीन अलर्ट। आपके बच्चे ने SOS सिस्टम सक्रिय किया है।"
     )
 
     client.calls.create(
@@ -130,31 +156,29 @@ tab1, tab2, tab3 = st.tabs([
 ])
 
 # --------------------------------------------------
-# TAB 1: REGISTRATION
+# REGISTRATION
 # --------------------------------------------------
 
 with tab1:
-    st.subheader("Parent Registration Form")
+    st.subheader("Parent Registration")
 
     name = st.text_input("Child Name")
     age = st.number_input("Child Age", 1, 18)
-    clothing = st.text_input("Clothing Color (when lost)")
-    lost_location = st.text_input("Location where child was lost")
-    photo = st.file_uploader("Upload Recent Child Photo", type=["jpg", "png", "jpeg"])
+    clothing = st.text_input("Clothing Color")
+    lost_location = st.text_input("Lost Location")
+    photo = st.file_uploader("Upload Child Photo", type=["jpg", "png", "jpeg"])
 
     if st.button("Register Child"):
         if not all([name, age, clothing, lost_location, photo]):
-            st.error("Please fill all fields")
+            st.error("All fields required")
         else:
             img_bytes = photo.read()
             img = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
             face = extract_face(img)
 
             if face is None:
-                st.error("No face detected in image")
+                st.error("No face detected")
             else:
-                face_blob = face.tobytes()
-
                 conn = sqlite3.connect(DB_FILE)
                 conn.execute("""
                     INSERT INTO child
@@ -166,25 +190,27 @@ with tab1:
                     clothing,
                     lost_location,
                     img_bytes,
-                    face_blob,
+                    face.tobytes(),
                     datetime.now().strftime("%d-%m-%Y %H:%M:%S")
                 ))
                 conn.commit()
                 conn.close()
 
-                st.success("✅ Child registered & stored securely in database")
+                st.success("✅ Child registered successfully")
 
 # --------------------------------------------------
-# TAB 2: FACE VERIFICATION
+# FACE VERIFICATION
 # --------------------------------------------------
 
 with tab2:
-    st.subheader("Verify Child Identity")
+    st.subheader("Face Verification")
 
-    mode = st.radio("Verification Mode", ["Live Camera", "Upload Image"])
+    mode = st.radio("Mode", ["Live Camera", "Upload Image"])
 
     conn = sqlite3.connect(DB_FILE)
-    row = conn.execute("SELECT face_encoding FROM child ORDER BY id DESC LIMIT 1").fetchone()
+    row = conn.execute(
+        "SELECT face_encoding FROM child ORDER BY id DESC LIMIT 1"
+    ).fetchone()
     conn.close()
 
     stored_face = None
@@ -192,35 +218,21 @@ with tab2:
         stored_face = np.frombuffer(row[0], dtype=np.uint8).reshape((200, 200))
 
     if mode == "Live Camera":
-        cam = st.camera_input("Capture Image")
+        cam = st.camera_input("Capture")
         if cam:
-            img = cv2.imdecode(
-                np.frombuffer(cam.read(), np.uint8),
-                cv2.IMREAD_COLOR
-            )
+            img = cv2.imdecode(np.frombuffer(cam.read(), np.uint8), cv2.IMREAD_COLOR)
             face = extract_face(img)
-
-            if compare_faces(stored_face, face):
-                st.success("✅ Child Identified")
-            else:
-                st.error("❌ Face Not Matched")
+            st.success("✅ Match Found") if compare_faces(stored_face, face) else st.error("❌ No Match")
 
     else:
         img = st.file_uploader("Upload Image", type=["jpg", "png"])
         if img:
-            img = cv2.imdecode(
-                np.frombuffer(img.read(), np.uint8),
-                cv2.IMREAD_COLOR
-            )
+            img = cv2.imdecode(np.frombuffer(img.read(), np.uint8), cv2.IMREAD_COLOR)
             face = extract_face(img)
-
-            if compare_faces(stored_face, face):
-                st.success("✅ Child Identified")
-            else:
-                st.error("❌ Face Not Matched")
+            st.success("✅ Match Found") if compare_faces(stored_face, face) else st.error("❌ No Match")
 
 # --------------------------------------------------
-# TAB 3: SOS
+# SOS (BIGGER BUTTON)
 # --------------------------------------------------
 
 with tab3:
@@ -229,13 +241,17 @@ with tab3:
     lang = st.radio("Call Language", ["English", "Hindi"])
     location = streamlit_geolocation()
 
-    if st.button("🆘 SOS"):
+    st.markdown('<div class="sos-btn">', unsafe_allow_html=True)
+    sos_pressed = st.button("🆘")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    if sos_pressed:
         if location["latitude"]:
             send_sos(location["latitude"], location["longitude"], lang)
             st.success("🚨 SOS sent successfully")
             st.balloons()
         else:
-            st.error("Location access denied")
+            st.error("Location permission denied")
 
     if location["latitude"]:
         st.markdown(
