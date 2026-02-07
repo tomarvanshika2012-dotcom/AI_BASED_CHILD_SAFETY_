@@ -1,109 +1,201 @@
 import streamlit as st
+import sqlite3
+import cv2
+import numpy as np
+import tempfile
+import os
+from datetime import datetime
 from twilio.rest import Client
 from streamlit_geolocation import streamlit_geolocation
-from datetime import datetime
 
-# --- 1. CREDENTIALS SETUP ---
+# =========================
+# 1. CONFIGURATION
+# =========================
 
 TWILIO_SID = "ACa12e602647785572ebaf765659d26d23"
 TWILIO_AUTH_TOKEN = "0e150a10a98b74ddc7d57e44fa3e01c6"
 TWILIO_PHONE = "+14176076960"
 REGISTERED_PHONE = "+918130631551"
 
-# --- 2. UI CONFIGURATION ---
-st.set_page_config(page_title="SafeGuard SOS", page_icon="🛡️", layout="centered")
+DB_FILE = "child_safety.db"
+FACE_CASCADE = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+
+st.set_page_config(page_title="SafeGuard AI Child Safety", page_icon="🛡️", layout="centered")
+
+# =========================
+# 2. DATABASE
+# =========================
+
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS child (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            created_at TEXT
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS sos_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            latitude REAL,
+            longitude REAL,
+            time TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# =========================
+# 3. STYLES
+# =========================
 
 st.markdown("""
-    <style>
-    .stButton>button {
-        background-color: #ff4b4b; color: white;
-        height: 250px; width: 250px; border-radius: 50%;
-        font-size: 40px; font-weight: bold; border: 10px solid #bd1a1a;
-        margin: auto; display: block;
-        box-shadow: 0px 15px 35px rgba(255, 75, 75, 0.4);
-        transition: all 0.3s ease-in-out;
-    }
-    .stButton>button:hover {
-        background-color: #d12e2e;
-        transform: scale(1.05);
-    }
-    .stButton>button:active {
-        transform: scale(0.95);
-    }
-    </style>
-    """, unsafe_allow_html=True)
+<style>
+.sos-btn button {
+    background-color:#ff4b4b;
+    color:white;
+    height:220px;
+    width:220px;
+    border-radius:50%;
+    font-size:38px;
+    border:10px solid #b30000;
+}
+</style>
+""", unsafe_allow_html=True)
 
-# --- 3. SIDEBAR MONITOR ---
-with st.sidebar:
-    st.header("🛰️ Dispatch Monitor")
-    # Quick check to see if keys are populated
-    if "AC" in TWILIO_SID:
-        st.success("System Status: ONLINE")
+# =========================
+# 4. FACE UTILITIES
+# =========================
+
+def extract_face(image):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    faces = FACE_CASCADE.detectMultiScale(gray, 1.3, 5)
+    if len(faces) == 0:
+        return None
+    x, y, w, h = faces[0]
+    return cv2.resize(gray[y:y+h, x:x+w], (200, 200))
+
+def compare_faces(face1, face2):
+    if face1 is None or face2 is None:
+        return False
+    diff = np.mean(cv2.absdiff(face1, face2))
+    return diff < 60   # tolerance for low quality images
+
+# =========================
+# 5. SOS FUNCTION
+# =========================
+
+def send_sos(lat, lon, lang):
+    client = Client(TWILIO_SID, TWILIO_AUTH_TOKEN)
+    now = datetime.now().strftime("%d-%m-%Y %I:%M %p")
+    maps = f"https://www.google.com/maps?q={lat},{lon}"
+
+    client.messages.create(
+        body=f"🚨 CHILD SOS 🚨\nTime: {now}\nLocation: {maps}",
+        from_=TWILIO_PHONE,
+        to=REGISTERED_PHONE
+    )
+
+    msg = (
+        "Emergency alert! Your child pressed the SOS button."
+        if lang == "English"
+        else "आपातकालीन अलर्ट। आपके बच्चे ने SOS बटन दबाया है।"
+    )
+
+    client.calls.create(
+        twiml=f"<Response><Say>{msg}</Say></Response>",
+        from_=TWILIO_PHONE,
+        to=REGISTERED_PHONE
+    )
+
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("INSERT INTO sos_log(latitude, longitude, time) VALUES (?,?,?)",
+                 (lat, lon, now))
+    conn.commit()
+    conn.close()
+
+# =========================
+# 6. UI
+# =========================
+
+st.title("🛡️ SafeGuard AI Child Safety System")
+
+tab1, tab2, tab3 = st.tabs(["🧠 Face Recognition", "📸 Camera / Upload", "🆘 SOS"])
+
+# -------- TAB 1: REGISTER FACE --------
+with tab1:
+    st.subheader("Register Child Face")
+    child_name = st.text_input("Child Name")
+    img = st.file_uploader("Upload Child Image", type=["jpg", "png", "jpeg"])
+
+    if img and st.button("Save Face"):
+        img_np = np.frombuffer(img.read(), np.uint8)
+        image = cv2.imdecode(img_np, cv2.IMREAD_COLOR)
+        face = extract_face(image)
+
+        if face is None:
+            st.error("No face detected.")
+        else:
+            np.save("child_face.npy", face)
+            conn = sqlite3.connect(DB_FILE)
+            conn.execute("INSERT INTO child(name, created_at) VALUES (?,?)",
+                         (child_name, datetime.now()))
+            conn.commit()
+            conn.close()
+            st.success("Face Registered Successfully")
+
+# -------- TAB 2: LIVE CAMERA / UPLOAD --------
+with tab2:
+    st.subheader("Verify Face")
+
+    option = st.radio("Select Mode", ["Live Camera", "Upload Image"])
+
+    if os.path.exists("child_face.npy"):
+        stored_face = np.load("child_face.npy")
     else:
-        st.error("System Status: CREDENTIALS MISSING")
-    
-    st.divider()
-    st.write(f"**Guardian Phone:** `{REGISTERED_PHONE}`")
-    voice_lang = st.radio("Voice Call Language", ["English", "Hindi"])
+        stored_face = None
 
-# --- 4. CORE SOS FUNCTION ---
-def trigger_emergency_protocol(lat, lon, lang):
-    try:
-        client = Client(TWILIO_SID, TWILIO_AUTH_TOKEN)
-        now = datetime.now().strftime("%d-%m-%Y | %I:%M %p")
-        # Standard Google Maps Link
-        maps_link = f"https://www.google.com/maps?q={lat},{lon}"
-
-        # A. DISPATCH SMS
-        msg_body = (
-            f"🚨 CHILD SAFETY ALERT 🚨\n"
-            f"SOS Button Pressed!\n"
-            f"Time: {now}\n"
-            f"Location: {maps_link}"
-        )
-        client.messages.create(body=msg_body, from_=TWILIO_PHONE, to=REGISTERED_PHONE)
-
-        # B. DISPATCH VOICE CALL
-        voice_id = "alice" if lang == "English" else "Google.hi-IN-Wavenet-A"
-        speech_text = (
-            "Emergency alert! Your child has triggered the SOS system. Check your messages for their location."
-            if lang == "English" else 
-            "आपातकालीन अलर्ट। आपके बच्चे ने सुरक्षा बटन दबाया है। कृपया स्थान की जानकारी के लिए अपने संदेश देखें।"
-        )
-
-        client.calls.create(
-            twiml=f'<Response><Say voice="{voice_id}">{speech_text}</Say></Response>',
-            from_=TWILIO_PHONE,
-            to=REGISTERED_PHONE
-        )
-        return True, "Alert Dispatched Successfully."
-    except Exception as e:
-        return False, str(e)
-
-# --- 5. MAIN INTERFACE ---
-st.title("🛡️ SafeGuard SOS")
-st.write("Instant Emergency Response Hub")
-
-# Geolocation component
-location = streamlit_geolocation()
-
-if st.button("🆘 SOS"):
-    if location['latitude'] and location['longitude']:
-        with st.status("Executing Emergency Protocols...", expanded=True) as status:
-            lat, lon = location['latitude'], location['longitude']
-            success, info = trigger_emergency_protocol(lat, lon, voice_lang)
-            
-            if success:
-                status.update(label="✅ ALERTS SENT", state="complete")
-                st.success(f"SMS and Voice call sent to {REGISTERED_PHONE}")
-                st.balloons()
+    if option == "Live Camera":
+        cam = st.camera_input("Capture Image")
+        if cam:
+            img = cv2.imdecode(np.frombuffer(cam.read(), np.uint8), cv2.IMREAD_COLOR)
+            face = extract_face(img)
+            if compare_faces(stored_face, face):
+                st.success("✅ Child Verified")
             else:
-                status.update(label="❌ SYSTEM FAILURE", state="error")
-                st.error(f"Error: {info}")
-    else:
-        st.error("Critical Error: Location access denied. Please enable GPS in your browser.")
+                st.error("❌ Face Not Matched")
 
-if location['latitude']:
-    st.divider()
-    st.write(f"**Current Coordinates:** {location['latitude']}, {location['longitude']}")
-    st.write(f"**Live Preview:** [View on Google Maps](https://www.google.com/maps?q={location['latitude']},{location['longitude']})")
+    else:
+        img = st.file_uploader("Upload Image", type=["jpg", "png"])
+        if img:
+            img = cv2.imdecode(np.frombuffer(img.read(), np.uint8), cv2.IMREAD_COLOR)
+            face = extract_face(img)
+            if compare_faces(stored_face, face):
+                st.success("✅ Child Verified")
+            else:
+                st.error("❌ Face Not Matched")
+
+# -------- TAB 3: SOS --------
+with tab3:
+    st.subheader("Emergency SOS")
+    lang = st.radio("Call Language", ["English", "Hindi"])
+    location = streamlit_geolocation()
+
+    if st.button("🆘 SOS", key="sos"):
+        if location["latitude"]:
+            send_sos(location["latitude"], location["longitude"], lang)
+            st.success("🚨 SOS Sent Successfully")
+            st.balloons()
+        else:
+            st.error("Location access denied")
+
+    if location["latitude"]:
+        st.write("📍 Location:",
+                 location["latitude"], location["longitude"])
+        st.markdown(
+            f"[View on Map](https://www.google.com/maps?q={location['latitude']},{location['longitude']})"
+        )
