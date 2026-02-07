@@ -2,14 +2,13 @@ import streamlit as st
 import sqlite3
 import cv2
 import numpy as np
-import tempfile
 import os
 from datetime import datetime
 from twilio.rest import Client
 from streamlit_geolocation import streamlit_geolocation
 
 # =========================
-# 1. CONFIGURATION
+# CONFIG
 # =========================
 
 TWILIO_SID = "ACa12e602647785572ebaf765659d26d23"
@@ -18,24 +17,38 @@ TWILIO_PHONE = "+14176076960"
 REGISTERED_PHONE = "+918130631551"
 
 DB_FILE = "child_safety.db"
-FACE_CASCADE = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 
-st.set_page_config(page_title="SafeGuard AI Child Safety", page_icon="🛡️", layout="centered")
+FACE_CASCADE = cv2.CascadeClassifier(
+    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+)
+
+st.set_page_config(
+    page_title="SafeGuard AI Child Safety",
+    page_icon="🛡️",
+    layout="centered"
+)
 
 # =========================
-# 2. DATABASE
+# DATABASE
 # =========================
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
+
     c.execute("""
         CREATE TABLE IF NOT EXISTS child (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT,
-            created_at TEXT
+            name TEXT NOT NULL,
+            age INTEGER NOT NULL,
+            clothing_color TEXT NOT NULL,
+            lost_location TEXT NOT NULL,
+            photo BLOB NOT NULL,
+            face_encoding BLOB NOT NULL,
+            registered_at TEXT NOT NULL
         )
     """)
+
     c.execute("""
         CREATE TABLE IF NOT EXISTS sos_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -44,31 +57,14 @@ def init_db():
             time TEXT
         )
     """)
+
     conn.commit()
     conn.close()
 
 init_db()
 
 # =========================
-# 3. STYLES
-# =========================
-
-st.markdown("""
-<style>
-.sos-btn button {
-    background-color:#ff4b4b;
-    color:white;
-    height:220px;
-    width:220px;
-    border-radius:50%;
-    font-size:38px;
-    border:10px solid #b30000;
-}
-</style>
-""", unsafe_allow_html=True)
-
-# =========================
-# 4. FACE UTILITIES
+# FACE FUNCTIONS
 # =========================
 
 def extract_face(image):
@@ -77,16 +73,17 @@ def extract_face(image):
     if len(faces) == 0:
         return None
     x, y, w, h = faces[0]
-    return cv2.resize(gray[y:y+h, x:x+w], (200, 200))
+    face = gray[y:y+h, x:x+w]
+    return cv2.resize(face, (200, 200))
 
-def compare_faces(face1, face2):
-    if face1 is None or face2 is None:
+def compare_faces(f1, f2):
+    if f1 is None or f2 is None:
         return False
-    diff = np.mean(cv2.absdiff(face1, face2))
-    return diff < 60   # tolerance for low quality images
+    diff = np.mean(cv2.absdiff(f1, f2))
+    return diff < 60
 
 # =========================
-# 5. SOS FUNCTION
+# SOS FUNCTION
 # =========================
 
 def send_sos(lat, lon, lang):
@@ -95,107 +92,152 @@ def send_sos(lat, lon, lang):
     maps = f"https://www.google.com/maps?q={lat},{lon}"
 
     client.messages.create(
-        body=f"🚨 CHILD SOS 🚨\nTime: {now}\nLocation: {maps}",
+        body=f"🚨 CHILD SOS ALERT 🚨\nTime: {now}\nLocation: {maps}",
         from_=TWILIO_PHONE,
         to=REGISTERED_PHONE
     )
 
-    msg = (
-        "Emergency alert! Your child pressed the SOS button."
+    speech = (
+        "Emergency alert! Your child has pressed the SOS button."
         if lang == "English"
         else "आपातकालीन अलर्ट। आपके बच्चे ने SOS बटन दबाया है।"
     )
 
     client.calls.create(
-        twiml=f"<Response><Say>{msg}</Say></Response>",
+        twiml=f"<Response><Say>{speech}</Say></Response>",
         from_=TWILIO_PHONE,
         to=REGISTERED_PHONE
     )
 
     conn = sqlite3.connect(DB_FILE)
-    conn.execute("INSERT INTO sos_log(latitude, longitude, time) VALUES (?,?,?)",
-                 (lat, lon, now))
+    conn.execute(
+        "INSERT INTO sos_log(latitude, longitude, time) VALUES (?,?,?)",
+        (lat, lon, now)
+    )
     conn.commit()
     conn.close()
 
 # =========================
-# 6. UI
+# UI
 # =========================
 
 st.title("🛡️ SafeGuard AI Child Safety System")
 
-tab1, tab2, tab3 = st.tabs(["🧠 Face Recognition", "📸 Camera / Upload", "🆘 SOS"])
+tab1, tab2, tab3 = st.tabs([
+    "📝 Child Registration",
+    "📸 Face Verification",
+    "🆘 Emergency SOS"
+])
 
-# -------- TAB 1: REGISTER FACE --------
+# --------------------------------------------------
+# TAB 1: REGISTRATION
+# --------------------------------------------------
+
 with tab1:
-    st.subheader("Register Child Face")
-    child_name = st.text_input("Child Name")
-    img = st.file_uploader("Upload Child Image", type=["jpg", "png", "jpeg"])
+    st.subheader("Parent Registration Form")
 
-    if img and st.button("Save Face"):
-        img_np = np.frombuffer(img.read(), np.uint8)
-        image = cv2.imdecode(img_np, cv2.IMREAD_COLOR)
-        face = extract_face(image)
+    name = st.text_input("Child Name")
+    age = st.number_input("Child Age", 1, 18)
+    clothing = st.text_input("Clothing Color (when lost)")
+    lost_location = st.text_input("Location where child was lost")
+    photo = st.file_uploader("Upload Recent Child Photo", type=["jpg", "png", "jpeg"])
 
-        if face is None:
-            st.error("No face detected.")
+    if st.button("Register Child"):
+        if not all([name, age, clothing, lost_location, photo]):
+            st.error("Please fill all fields")
         else:
-            np.save("child_face.npy", face)
-            conn = sqlite3.connect(DB_FILE)
-            conn.execute("INSERT INTO child(name, created_at) VALUES (?,?)",
-                         (child_name, datetime.now()))
-            conn.commit()
-            conn.close()
-            st.success("Face Registered Successfully")
+            img_bytes = photo.read()
+            img = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
+            face = extract_face(img)
 
-# -------- TAB 2: LIVE CAMERA / UPLOAD --------
+            if face is None:
+                st.error("No face detected in image")
+            else:
+                face_blob = face.tobytes()
+
+                conn = sqlite3.connect(DB_FILE)
+                conn.execute("""
+                    INSERT INTO child
+                    (name, age, clothing_color, lost_location, photo, face_encoding, registered_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    name,
+                    age,
+                    clothing,
+                    lost_location,
+                    img_bytes,
+                    face_blob,
+                    datetime.now().strftime("%d-%m-%Y %H:%M:%S")
+                ))
+                conn.commit()
+                conn.close()
+
+                st.success("✅ Child registered & stored securely in database")
+
+# --------------------------------------------------
+# TAB 2: FACE VERIFICATION
+# --------------------------------------------------
+
 with tab2:
-    st.subheader("Verify Face")
+    st.subheader("Verify Child Identity")
 
-    option = st.radio("Select Mode", ["Live Camera", "Upload Image"])
+    mode = st.radio("Verification Mode", ["Live Camera", "Upload Image"])
 
-    if os.path.exists("child_face.npy"):
-        stored_face = np.load("child_face.npy")
-    else:
-        stored_face = None
+    conn = sqlite3.connect(DB_FILE)
+    row = conn.execute("SELECT face_encoding FROM child ORDER BY id DESC LIMIT 1").fetchone()
+    conn.close()
 
-    if option == "Live Camera":
+    stored_face = None
+    if row:
+        stored_face = np.frombuffer(row[0], dtype=np.uint8).reshape((200, 200))
+
+    if mode == "Live Camera":
         cam = st.camera_input("Capture Image")
         if cam:
-            img = cv2.imdecode(np.frombuffer(cam.read(), np.uint8), cv2.IMREAD_COLOR)
+            img = cv2.imdecode(
+                np.frombuffer(cam.read(), np.uint8),
+                cv2.IMREAD_COLOR
+            )
             face = extract_face(img)
+
             if compare_faces(stored_face, face):
-                st.success("✅ Child Verified")
+                st.success("✅ Child Identified")
             else:
                 st.error("❌ Face Not Matched")
 
     else:
         img = st.file_uploader("Upload Image", type=["jpg", "png"])
         if img:
-            img = cv2.imdecode(np.frombuffer(img.read(), np.uint8), cv2.IMREAD_COLOR)
+            img = cv2.imdecode(
+                np.frombuffer(img.read(), np.uint8),
+                cv2.IMREAD_COLOR
+            )
             face = extract_face(img)
+
             if compare_faces(stored_face, face):
-                st.success("✅ Child Verified")
+                st.success("✅ Child Identified")
             else:
                 st.error("❌ Face Not Matched")
 
-# -------- TAB 3: SOS --------
+# --------------------------------------------------
+# TAB 3: SOS
+# --------------------------------------------------
+
 with tab3:
     st.subheader("Emergency SOS")
+
     lang = st.radio("Call Language", ["English", "Hindi"])
     location = streamlit_geolocation()
 
-    if st.button("🆘 SOS", key="sos"):
+    if st.button("🆘 SOS"):
         if location["latitude"]:
             send_sos(location["latitude"], location["longitude"], lang)
-            st.success("🚨 SOS Sent Successfully")
+            st.success("🚨 SOS sent successfully")
             st.balloons()
         else:
             st.error("Location access denied")
 
     if location["latitude"]:
-        st.write("📍 Location:",
-                 location["latitude"], location["longitude"])
         st.markdown(
-            f"[View on Map](https://www.google.com/maps?q={location['latitude']},{location['longitude']})"
+            f"[📍 View Location](https://www.google.com/maps?q={location['latitude']},{location['longitude']})"
         )
