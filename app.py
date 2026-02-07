@@ -6,14 +6,19 @@ from datetime import datetime
 from twilio.rest import Client
 from streamlit_geolocation import streamlit_geolocation
 
-# =========================
-# TWILIO CONFIG
-# =========================
+# ==================================================
+# TWILIO CONFIG (ONE ACCOUNT)
+# ==================================================
 
-TWILIO_SID = "ACc9b9941c778de30e2ed7ba57f87cdfbc"
-TWILIO_AUTH_TOKEN = "b524116dc4b14af314a5919594df9121"
-TWILIO_PHONE = "+15075195618"
-REGISTERED_PHONE = "+918130631551"
+TWILIO_SID = "ACa12e602647785572ebaf765659d26d23"
+TWILIO_AUTH_TOKEN = "0e150a10a98b74ddc7d57e44fa3e01c6"
+TWILIO_PHONE = "+14176076960"
+
+# TWO EMERGENCY NUMBERS (BOTH WILL GET SOS)
+EMERGENCY_NUMBERS = [
+    "+918130631551",   # Parent
+    "+917678495189"    # Second guardian / relative / police
+]
 
 DB_FILE = "child_safety.db"
 
@@ -27,9 +32,9 @@ st.set_page_config(
     layout="centered"
 )
 
-# =========================
-# SOS BUTTON STYLE (BIGGER)
-# =========================
+# ==================================================
+# SOS BUTTON STYLE (BIG)
+# ==================================================
 
 st.markdown("""
 <style>
@@ -42,21 +47,14 @@ st.markdown("""
     font-size: 44px;
     font-weight: bold;
     border: 12px solid #b30000;
-    box-shadow: 0px 15px 35px rgba(255, 0, 0, 0.45);
-    transition: all 0.2s ease-in-out;
-}
-.sos-btn button:hover {
-    transform: scale(1.05);
-}
-.sos-btn button:active {
-    transform: scale(0.95);
+    box-shadow: 0px 15px 35px rgba(255,0,0,0.45);
 }
 </style>
 """, unsafe_allow_html=True)
 
-# =========================
+# ==================================================
 # DATABASE
-# =========================
+# ==================================================
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -89,9 +87,9 @@ def init_db():
 
 init_db()
 
-# =========================
+# ==================================================
 # FACE FUNCTIONS
-# =========================
+# ==================================================
 
 def extract_face(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -104,12 +102,11 @@ def extract_face(image):
 def compare_faces(f1, f2):
     if f1 is None or f2 is None:
         return False
-    diff = np.mean(cv2.absdiff(f1, f2))
-    return diff < 60
+    return np.mean(cv2.absdiff(f1, f2)) < 60
 
-# =========================
-# SOS FUNCTION
-# =========================
+# ==================================================
+# SOS FUNCTION (ONE ACCOUNT → TWO NUMBERS)
+# ==================================================
 
 def send_sos(lat, lon, lang):
     client = Client(TWILIO_SID, TWILIO_AUTH_TOKEN)
@@ -117,11 +114,7 @@ def send_sos(lat, lon, lang):
     now = datetime.now().strftime("%d-%m-%Y %I:%M %p")
     maps = f"https://www.google.com/maps?q={lat},{lon}"
 
-    client.messages.create(
-        body=f"🚨 CHILD SOS ALERT 🚨\nTime: {now}\nLocation: {maps}",
-        from_=TWILIO_PHONE,
-        to=REGISTERED_PHONE
-    )
+    message = f"🚨 CHILD SOS ALERT 🚨\nTime: {now}\nLocation: {maps}"
 
     speech = (
         "Emergency alert. Your child has triggered the SOS system."
@@ -129,12 +122,26 @@ def send_sos(lat, lon, lang):
         else "आपातकालीन अलर्ट। आपके बच्चे ने SOS सिस्टम सक्रिय किया है।"
     )
 
-    client.calls.create(
-        twiml=f"<Response><Say>{speech}</Say></Response>",
-        from_=TWILIO_PHONE,
-        to=REGISTERED_PHONE
-    )
+    for number in EMERGENCY_NUMBERS:
+        try:
+            # SMS
+            client.messages.create(
+                body=message,
+                from_=TWILIO_PHONE,
+                to=number
+            )
 
+            # CALL
+            client.calls.create(
+                twiml=f"<Response><Say>{speech}</Say></Response>",
+                from_=TWILIO_PHONE,
+                to=number
+            )
+
+        except Exception as e:
+            print("Twilio error:", e)
+
+    # Log SOS
     conn = sqlite3.connect(DB_FILE)
     conn.execute(
         "INSERT INTO sos_log(latitude, longitude, time) VALUES (?,?,?)",
@@ -143,9 +150,9 @@ def send_sos(lat, lon, lang):
     conn.commit()
     conn.close()
 
-# =========================
+# ==================================================
 # UI
-# =========================
+# ==================================================
 
 st.title("🛡️ SafeGuard AI Child Safety System")
 
@@ -155,9 +162,7 @@ tab1, tab2, tab3 = st.tabs([
     "🆘 Emergency SOS"
 ])
 
-# --------------------------------------------------
-# REGISTRATION
-# --------------------------------------------------
+# ---------------- REGISTRATION ----------------
 
 with tab1:
     st.subheader("Parent Registration")
@@ -185,22 +190,15 @@ with tab1:
                     (name, age, clothing_color, lost_location, photo, face_encoding, registered_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    name,
-                    age,
-                    clothing,
-                    lost_location,
-                    img_bytes,
-                    face.tobytes(),
+                    name, age, clothing, lost_location,
+                    img_bytes, face.tobytes(),
                     datetime.now().strftime("%d-%m-%Y %H:%M:%S")
                 ))
                 conn.commit()
                 conn.close()
-
                 st.success("✅ Child registered successfully")
 
-# --------------------------------------------------
-# FACE VERIFICATION
-# --------------------------------------------------
+# ---------------- FACE VERIFICATION ----------------
 
 with tab2:
     st.subheader("Face Verification")
@@ -231,9 +229,7 @@ with tab2:
             face = extract_face(img)
             st.success("✅ Match Found") if compare_faces(stored_face, face) else st.error("❌ No Match")
 
-# --------------------------------------------------
-# SOS (BIGGER BUTTON)
-# --------------------------------------------------
+# ---------------- SOS ----------------
 
 with tab3:
     st.subheader("Emergency SOS")
@@ -248,12 +244,7 @@ with tab3:
     if sos_pressed:
         if location["latitude"]:
             send_sos(location["latitude"], location["longitude"], lang)
-            st.success("🚨 SOS sent successfully")
+            st.success("🚨 SOS sent to BOTH numbers")
             st.balloons()
         else:
             st.error("Location permission denied")
-
-    if location["latitude"]:
-        st.markdown(
-            f"[📍 View Location](https://www.google.com/maps?q={location['latitude']},{location['longitude']})"
-        )
