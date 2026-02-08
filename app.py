@@ -10,14 +10,26 @@ from streamlit_geolocation import streamlit_geolocation
 # TWILIO CONFIG (ONE ACCOUNT)
 # ==================================================
 
-TWILIO_SID = "ACa12e602647785572ebaf765659d26d23"
-TWILIO_AUTH_TOKEN = "0e150a10a98b74ddc7d57e44fa3e01c6"
-TWILIO_PHONE = "+14176076960"
+TWILIO_SID = "ACc9b9941c778de30e2ed7ba57f87cdfbc"
+TWILIO_AUTH_TOKEN = "b524116dc4b14af314a5919594df9121"
+TWILIO_PHONE = "+15075195618"
 
-# TWO EMERGENCY NUMBERS (BOTH WILL GET SOS)
+# Twilio WhatsApp Sandbox
+TWILIO_WHATSAPP = "whatsapp:+14155238886"
+
+# SMS + CALL NUMBERS
 EMERGENCY_NUMBERS = [
-    "+918130631551",   # Parent
-    "+917678495189"    # Second guardian / relative / police
+    "+918130631551",
+    "+919999999999"
+]
+
+# 5 WHATSAPP NUMBERS
+WHATSAPP_NUMBERS = [
+    "+918130631551",
+    "+919111111111",
+    "+919222222222",
+    "+919333333333",
+    "+919444444444"
 ]
 
 DB_FILE = "child_safety.db"
@@ -105,7 +117,7 @@ def compare_faces(f1, f2):
     return np.mean(cv2.absdiff(f1, f2)) < 60
 
 # ==================================================
-# SOS FUNCTION (ONE ACCOUNT → TWO NUMBERS)
+# SOS FUNCTION (SMS + CALL + 5 WHATSAPP)
 # ==================================================
 
 def send_sos(lat, lon, lang):
@@ -114,34 +126,43 @@ def send_sos(lat, lon, lang):
     now = datetime.now().strftime("%d-%m-%Y %I:%M %p")
     maps = f"https://www.google.com/maps?q={lat},{lon}"
 
-    message = f"🚨 CHILD SOS ALERT 🚨\nTime: {now}\nLocation: {maps}"
+    text_msg = f"🚨 CHILD SOS ALERT 🚨\nTime: {now}\nLocation: {maps}"
 
-    speech = (
+    voice_msg = (
         "Emergency alert. Your child has triggered the SOS system."
         if lang == "English"
         else "आपातकालीन अलर्ट। आपके बच्चे ने SOS सिस्टम सक्रिय किया है।"
     )
 
+    # SMS + CALL
     for number in EMERGENCY_NUMBERS:
         try:
-            # SMS
             client.messages.create(
-                body=message,
+                body=text_msg,
                 from_=TWILIO_PHONE,
                 to=number
             )
 
-            # CALL
             client.calls.create(
-                twiml=f"<Response><Say>{speech}</Say></Response>",
+                twiml=f"<Response><Say>{voice_msg}</Say></Response>",
                 from_=TWILIO_PHONE,
                 to=number
             )
-
         except Exception as e:
-            print("Twilio error:", e)
+            print("SMS/CALL Error:", e)
 
-    # Log SOS
+    # WHATSAPP (5 MESSAGES)
+    for w in WHATSAPP_NUMBERS:
+        try:
+            client.messages.create(
+                body=text_msg,
+                from_=TWILIO_WHATSAPP,
+                to=f"whatsapp:{w}"
+            )
+        except Exception as e:
+            print("WhatsApp Error:", e)
+
+    # LOG SOS
     conn = sqlite3.connect(DB_FILE)
     conn.execute(
         "INSERT INTO sos_log(latitude, longitude, time) VALUES (?,?,?)",
@@ -214,37 +235,3 @@ with tab2:
     stored_face = None
     if row:
         stored_face = np.frombuffer(row[0], dtype=np.uint8).reshape((200, 200))
-
-    if mode == "Live Camera":
-        cam = st.camera_input("Capture")
-        if cam:
-            img = cv2.imdecode(np.frombuffer(cam.read(), np.uint8), cv2.IMREAD_COLOR)
-            face = extract_face(img)
-            st.success("✅ Match Found") if compare_faces(stored_face, face) else st.error("❌ No Match")
-
-    else:
-        img = st.file_uploader("Upload Image", type=["jpg", "png"])
-        if img:
-            img = cv2.imdecode(np.frombuffer(img.read(), np.uint8), cv2.IMREAD_COLOR)
-            face = extract_face(img)
-            st.success("✅ Match Found") if compare_faces(stored_face, face) else st.error("❌ No Match")
-
-# ---------------- SOS ----------------
-
-with tab3:
-    st.subheader("Emergency SOS")
-
-    lang = st.radio("Call Language", ["English", "Hindi"])
-    location = streamlit_geolocation()
-
-    st.markdown('<div class="sos-btn">', unsafe_allow_html=True)
-    sos_pressed = st.button("🆘")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    if sos_pressed:
-        if location["latitude"]:
-            send_sos(location["latitude"], location["longitude"], lang)
-            st.success("🚨 SOS sent to BOTH numbers")
-            st.balloons()
-        else:
-            st.error("Location permission denied")
