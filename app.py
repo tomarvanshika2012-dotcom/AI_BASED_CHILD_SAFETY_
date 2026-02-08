@@ -5,6 +5,14 @@ import numpy as np
 from datetime import datetime
 from twilio.rest import Client
 from streamlit_geolocation import streamlit_geolocation
+import os
+
+# ==================================================
+# DATABASE FOLDER SETUP
+# ==================================================
+DB_FOLDER = "database"
+os.makedirs(DB_FOLDER, exist_ok=True)
+DB_FILE = os.path.join(DB_FOLDER, "child_safety.db")
 
 # ==================================================
 # TWILIO CONFIG (ONE ACCOUNT)
@@ -14,13 +22,10 @@ TWILIO_SID = "ACa12e602647785572ebaf765659d26d23"
 TWILIO_AUTH_TOKEN = "0e150a10a98b74ddc7d57e44fa3e01c6"
 TWILIO_PHONE = "+14176076960"
 
-# TWO EMERGENCY NUMBERS (BOTH WILL GET SOS)
 EMERGENCY_NUMBERS = [
-    "+918130631551",   # Parent
-    "+917678495189"    # Second guardian / relative / police
+    "+918130631551",
+    "+917678495189"
 ]
-
-DB_FILE = "child_safety.db"
 
 FACE_CASCADE = cv2.CascadeClassifier(
     cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
@@ -33,7 +38,7 @@ st.set_page_config(
 )
 
 # ==================================================
-# SOS BUTTON STYLE (BIG)
+# SOS BUTTON STYLE
 # ==================================================
 
 st.markdown("""
@@ -105,7 +110,7 @@ def compare_faces(f1, f2):
     return np.mean(cv2.absdiff(f1, f2)) < 60
 
 # ==================================================
-# SOS FUNCTION (ONE ACCOUNT → TWO NUMBERS)
+# SOS FUNCTION
 # ==================================================
 
 def send_sos(lat, lon, lang):
@@ -124,24 +129,20 @@ def send_sos(lat, lon, lang):
 
     for number in EMERGENCY_NUMBERS:
         try:
-            # SMS
             client.messages.create(
                 body=message,
                 from_=TWILIO_PHONE,
                 to=number
             )
 
-            # CALL
             client.calls.create(
                 twiml=f"<Response><Say>{speech}</Say></Response>",
                 from_=TWILIO_PHONE,
                 to=number
             )
-
         except Exception as e:
             print("Twilio error:", e)
 
-    # Log SOS
     conn = sqlite3.connect(DB_FILE)
     conn.execute(
         "INSERT INTO sos_log(latitude, longitude, time) VALUES (?,?,?)",
