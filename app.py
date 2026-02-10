@@ -101,6 +101,7 @@ EMERGENCY_CONTACTS = [
     "+918103631551"
 ]
 
+# ================== FIXED SOS FUNCTION ==================
 def send_sos_alert(lat, lon):
     msg = (
         "🚨 CHILD SAFETY SOS 🚨\n"
@@ -111,31 +112,41 @@ def send_sos_alert(lat, lon):
         "Please check the location immediately."
     )
 
+    success = False
+
     for acc in TWILIO_ACCOUNTS:
         try:
             client = Client(acc["sid"], acc["token"])
+
             for num in EMERGENCY_CONTACTS:
+                # SMS
                 client.messages.create(
                     body=msg,
                     from_=acc["phone"],
                     to=num
                 )
+
+                # CALL
                 client.calls.create(
                     twiml=f"<Response><Say>{voice}</Say></Response>",
                     from_=acc["phone"],
                     to=num
                 )
-            return True
-        except Exception:
-            continue
-    return False
+
+            st.success(f"✅ SOS sent using {acc['phone']}")
+            success = True
+
+        except Exception as e:
+            st.warning(f"❌ Failed using {acc['phone']} → {e}")
+
+    return success
 
 # ================== UI TABS ==================
 tab1, tab2, tab3 = st.tabs(
     ["📝 Register Child", "📷 Browser / Live Camera Match", "🚨 Emergency SOS"]
 )
 
-# ================== TAB 1: REGISTRATION ==================
+# ================== TAB 1 ==================
 with tab1:
     st.header("Register Child")
 
@@ -174,7 +185,7 @@ with tab1:
             else:
                 st.warning("⚠️ Name and photo required")
 
-# ================== TAB 2: BROWSER + LIVE-LIKE CAMERA ==================
+# ================== TAB 2 ==================
 with tab2:
     st.header("📷 Face Verification")
 
@@ -184,55 +195,24 @@ with tab2:
     ).fetchone()
     conn.close()
 
-    if not row or row[1] is None:
-        st.warning("No registered face available.")
-    else:
+    if row and row[1]:
         stored_name, stored_face = row
         stored_face = np.frombuffer(stored_face, dtype=np.uint8).reshape((200, 200))
         st.info(f"Registered Child: **{stored_name}**")
 
-        mode = st.radio(
-            "Choose verification mode",
-            ["📷 Browser Camera", "📁 Upload Image", "🔴 Live Camera Mode"]
-        )
-
-        input_bytes = None
-
-        if mode == "📷 Browser Camera":
-            cam = st.camera_input("Capture using browser camera")
-            if cam:
-                input_bytes = cam.read()
-
-        elif mode == "📁 Upload Image":
-            uploaded = st.file_uploader(
-                "Upload image for verification",
-                ["jpg", "png", "jpeg"]
-            )
-            if uploaded:
-                input_bytes = uploaded.read()
-
-        elif mode == "🔴 Live Camera Mode":
-            st.info(
-                "Live mode uses repeated browser captures "
-                "(Streamlit limitation – no true video streaming)."
-            )
-            live_cam = st.camera_input("Live browser camera")
-            if live_cam:
-                input_bytes = live_cam.read()
-
-        if input_bytes and CV2_AVAILABLE:
-            img = cv2.imdecode(np.frombuffer(input_bytes, np.uint8), cv2.IMREAD_COLOR)
+        cam = st.camera_input("Capture using browser camera")
+        if cam and CV2_AVAILABLE:
+            img = cv2.imdecode(np.frombuffer(cam.read(), np.uint8), cv2.IMREAD_COLOR)
             face = extract_face(img)
 
-            if face is None:
-                st.error("❌ No face detected")
-            elif compare_faces(stored_face, face):
+            if face is not None and compare_faces(stored_face, face):
                 st.success("✅ MATCH FOUND")
-                st.balloons()
             else:
                 st.error("❌ NO MATCH")
+    else:
+        st.warning("No registered face available")
 
-# ================== TAB 3: SOS ==================
+# ================== TAB 3 ==================
 with tab3:
     st.header("🚨 Emergency SOS")
 
@@ -252,13 +232,13 @@ with tab3:
 
             sent = send_sos_alert(lat, lon)
             if sent:
-                st.error("🚨 SOS SENT (SMS + CALL)")
+                st.error("🚨 SOS SENT SUCCESSFULLY")
             else:
-                st.error("❌ SOS FAILED")
+                st.error("❌ SOS FAILED (CHECK TWILIO)")
         else:
             st.warning("Location permission not granted")
 
-# ================== SOS LOGS ==================
+# ================== LOGS ==================
 st.subheader("📂 Recent SOS Logs")
 
 conn = sqlite3.connect(DB_FILE)
