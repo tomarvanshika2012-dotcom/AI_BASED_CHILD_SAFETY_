@@ -22,8 +22,8 @@ st.title("🛡️ AI Child Safety System")
 
 if not CV2_AVAILABLE:
     st.warning(
-        "⚠️ Camera-based AI is disabled on Streamlit Cloud.\n\n"
-        "The system will still store data and send SOS alerts."
+        "⚠️ Camera-based AI is limited in this environment.\n"
+        "Upload-based verification is available."
     )
 
 # ================== DATABASE ==================
@@ -106,7 +106,6 @@ def send_sos_alert(lat, lon):
         "🚨 CHILD SAFETY SOS 🚨\n"
         f"Location: https://www.google.com/maps?q={lat},{lon}"
     )
-
     voice = (
         "Emergency alert. A child safety SOS has been triggered. "
         "Please check the location immediately."
@@ -133,7 +132,7 @@ def send_sos_alert(lat, lon):
 
 # ================== UI TABS ==================
 tab1, tab2, tab3 = st.tabs(
-    ["📝 Register Child", "🔍 Face Match", "🚨 Emergency SOS"]
+    ["📝 Register Child", "📷 Browser / Live Camera Match", "🚨 Emergency SOS"]
 )
 
 # ================== TAB 1: REGISTRATION ==================
@@ -150,13 +149,13 @@ with tab1:
         if st.form_submit_button("Register Child"):
             if name and photo:
                 img_bytes = photo.read()
+                face_bytes = None
 
                 if CV2_AVAILABLE:
                     img = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
                     face = extract_face(img)
-                    face_bytes = face.tobytes() if face is not None else None
-                else:
-                    face_bytes = None
+                    if face is not None:
+                        face_bytes = face.tobytes()
 
                 conn = sqlite3.connect(DB_FILE)
                 conn.execute("""
@@ -164,12 +163,8 @@ with tab1:
                     (name, age, photo, face, clothing_color, lost_location, registered_at)
                     VALUES (?,?,?,?,?,?,?)
                 """, (
-                    name,
-                    age,
-                    img_bytes,
-                    face_bytes,
-                    clothing,
-                    lost_loc,
+                    name, age, img_bytes, face_bytes,
+                    clothing, lost_loc,
                     datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 ))
                 conn.commit()
@@ -179,35 +174,63 @@ with tab1:
             else:
                 st.warning("⚠️ Name and photo required")
 
-# ================== TAB 2: FACE MATCH ==================
+# ================== TAB 2: BROWSER + LIVE-LIKE CAMERA ==================
 with tab2:
-    st.header("Face Verification")
+    st.header("📷 Face Verification")
 
-    if not CV2_AVAILABLE:
-        st.info("Face matching is available only in local mode.")
+    conn = sqlite3.connect(DB_FILE)
+    row = conn.execute(
+        "SELECT name, face FROM children ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+
+    if not row or row[1] is None:
+        st.warning("No registered face available.")
     else:
-        conn = sqlite3.connect(DB_FILE)
-        row = conn.execute(
-            "SELECT name, face FROM children ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        conn.close()
+        stored_name, stored_face = row
+        stored_face = np.frombuffer(stored_face, dtype=np.uint8).reshape((200, 200))
+        st.info(f"Registered Child: **{stored_name}**")
 
-        if row and row[1]:
-            stored_name, stored_face = row
-            stored_face = np.frombuffer(stored_face, dtype=np.uint8).reshape((200, 200))
-            st.info(f"Registered Child: **{stored_name}**")
+        mode = st.radio(
+            "Choose verification mode",
+            ["📷 Browser Camera", "📁 Upload Image", "🔴 Live Camera Mode"]
+        )
 
-            cam = st.camera_input("Scan Face")
+        input_bytes = None
+
+        if mode == "📷 Browser Camera":
+            cam = st.camera_input("Capture using browser camera")
             if cam:
-                img = cv2.imdecode(np.frombuffer(cam.read(), np.uint8), cv2.IMREAD_COLOR)
-                face = extract_face(img)
+                input_bytes = cam.read()
 
-                if face is not None and compare_faces(stored_face, face):
-                    st.success("✅ MATCH FOUND")
-                else:
-                    st.error("❌ NO MATCH")
-        else:
-            st.warning("No face data available")
+        elif mode == "📁 Upload Image":
+            uploaded = st.file_uploader(
+                "Upload image for verification",
+                ["jpg", "png", "jpeg"]
+            )
+            if uploaded:
+                input_bytes = uploaded.read()
+
+        elif mode == "🔴 Live Camera Mode":
+            st.info(
+                "Live mode uses repeated browser captures "
+                "(Streamlit limitation – no true video streaming)."
+            )
+            live_cam = st.camera_input("Live browser camera")
+            if live_cam:
+                input_bytes = live_cam.read()
+
+        if input_bytes and CV2_AVAILABLE:
+            img = cv2.imdecode(np.frombuffer(input_bytes, np.uint8), cv2.IMREAD_COLOR)
+            face = extract_face(img)
+
+            if face is None:
+                st.error("❌ No face detected")
+            elif compare_faces(stored_face, face):
+                st.success("✅ MATCH FOUND")
+                st.balloons()
+            else:
+                st.error("❌ NO MATCH")
 
 # ================== TAB 3: SOS ==================
 with tab3:
