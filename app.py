@@ -23,7 +23,7 @@ st.title("🛡️ AI Child Safety System")
 if not CV2_AVAILABLE:
     st.warning(
         "⚠️ Camera-based AI is limited in this environment.\n"
-        "Upload-based verification is available."
+        "Image upload is available."
     )
 
 # ================== DATABASE ==================
@@ -98,10 +98,9 @@ TWILIO_ACCOUNTS = [
 
 EMERGENCY_CONTACTS = [
     "+917678495189",
-    "+918103631551"
+    "+918130631551"
 ]
 
-# ================== FIXED SOS FUNCTION ==================
 def send_sos_alert(lat, lon):
     msg = (
         "🚨 CHILD SAFETY SOS 🚨\n"
@@ -115,38 +114,33 @@ def send_sos_alert(lat, lon):
     success = False
 
     for acc in TWILIO_ACCOUNTS:
-        try:
-            client = Client(acc["sid"], acc["token"])
+        client = Client(acc["sid"], acc["token"])
 
-            for num in EMERGENCY_CONTACTS:
-                # SMS
+        for num in EMERGENCY_CONTACTS:
+            try:
                 client.messages.create(
                     body=msg,
                     from_=acc["phone"],
                     to=num
                 )
-
-                # CALL
                 client.calls.create(
                     twiml=f"<Response><Say>{voice}</Say></Response>",
                     from_=acc["phone"],
                     to=num
                 )
-
-            st.success(f"✅ SOS sent using {acc['phone']}")
-            success = True
-
-        except Exception as e:
-            st.warning(f"❌ Failed using {acc['phone']} → {e}")
+                st.success(f"✅ SOS sent from {acc['phone']} → {num}")
+                success = True
+            except Exception as e:
+                st.warning(f"❌ Failed from {acc['phone']} → {num}: {e}")
 
     return success
 
 # ================== UI TABS ==================
 tab1, tab2, tab3 = st.tabs(
-    ["📝 Register Child", "📷 Browser / Live Camera Match", "🚨 Emergency SOS"]
+    ["📝 Register Child", "🔍 Face Match (Camera / Upload)", "🚨 Emergency SOS"]
 )
 
-# ================== TAB 1 ==================
+# ================== TAB 1: REGISTER ==================
 with tab1:
     st.header("Register Child")
 
@@ -163,7 +157,10 @@ with tab1:
                 face_bytes = None
 
                 if CV2_AVAILABLE:
-                    img = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
+                    img = cv2.imdecode(
+                        np.frombuffer(img_bytes, np.uint8),
+                        cv2.IMREAD_COLOR
+                    )
                     face = extract_face(img)
                     if face is not None:
                         face_bytes = face.tobytes()
@@ -185,9 +182,9 @@ with tab1:
             else:
                 st.warning("⚠️ Name and photo required")
 
-# ================== TAB 2 ==================
+# ================== TAB 2: FACE MATCH (BROWSER + UPLOAD) ==================
 with tab2:
-    st.header("📷 Face Verification")
+    st.header("🔍 Face Verification")
 
     conn = sqlite3.connect(DB_FILE)
     row = conn.execute(
@@ -195,24 +192,51 @@ with tab2:
     ).fetchone()
     conn.close()
 
-    if row and row[1]:
+    if not row or row[1] is None:
+        st.warning("No registered face available.")
+    else:
         stored_name, stored_face = row
-        stored_face = np.frombuffer(stored_face, dtype=np.uint8).reshape((200, 200))
+        stored_face = np.frombuffer(
+            stored_face, dtype=np.uint8
+        ).reshape((200, 200))
+
         st.info(f"Registered Child: **{stored_name}**")
 
-        cam = st.camera_input("Capture using browser camera")
-        if cam and CV2_AVAILABLE:
-            img = cv2.imdecode(np.frombuffer(cam.read(), np.uint8), cv2.IMREAD_COLOR)
+        mode = st.radio(
+            "Choose input method",
+            ["📷 Browser Camera", "📁 Upload Image"]
+        )
+
+        input_bytes = None
+
+        if mode == "📷 Browser Camera":
+            cam = st.camera_input("Capture using browser camera")
+            if cam:
+                input_bytes = cam.read()
+        else:
+            uploaded = st.file_uploader(
+                "Upload image for verification",
+                ["jpg", "png", "jpeg"]
+            )
+            if uploaded:
+                input_bytes = uploaded.read()
+
+        if input_bytes and CV2_AVAILABLE:
+            img = cv2.imdecode(
+                np.frombuffer(input_bytes, np.uint8),
+                cv2.IMREAD_COLOR
+            )
             face = extract_face(img)
 
-            if face is not None and compare_faces(stored_face, face):
+            if face is None:
+                st.error("❌ No face detected")
+            elif compare_faces(stored_face, face):
                 st.success("✅ MATCH FOUND")
+                st.balloons()
             else:
                 st.error("❌ NO MATCH")
-    else:
-        st.warning("No registered face available")
 
-# ================== TAB 3 ==================
+# ================== TAB 3: SOS ==================
 with tab3:
     st.header("🚨 Emergency SOS")
 
@@ -234,11 +258,11 @@ with tab3:
             if sent:
                 st.error("🚨 SOS SENT SUCCESSFULLY")
             else:
-                st.error("❌ SOS FAILED (CHECK TWILIO)")
+                st.error("❌ SOS FAILED")
         else:
             st.warning("Location permission not granted")
 
-# ================== LOGS ==================
+# ================== SOS LOGS ==================
 st.subheader("📂 Recent SOS Logs")
 
 conn = sqlite3.connect(DB_FILE)
