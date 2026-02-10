@@ -88,11 +88,6 @@ TWILIO_ACCOUNTS = [
         "sid": "ACc9b9941c778de30e2ed7ba57f87cdfbc",
         "token": "447ac1385fd300bff05d08380e4a2bd4",
         "phone": "+15075195618"
-    },
-    {
-        "sid": "ACa12e602647785572ebaf765659d26d23",
-        "token": "206ca9f819c0ce34b6a96f6958531262",
-        "phone": "+14176076960"
     }
 ]
 
