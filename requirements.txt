@@ -1,6 +1,7 @@
 streamlit
-opencv-python-headless
+pymongo
+dnspython
+opencv-python
+numpy
 twilio
 streamlit-geolocation
-python-dotenv
-pandas
