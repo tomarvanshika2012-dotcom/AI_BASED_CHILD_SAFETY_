@@ -1,65 +1,57 @@
 import streamlit as st
+import sqlite3
 import cv2
 import numpy as np
-import threading
 from datetime import datetime
-from twilio.rest import Client
 from streamlit_geolocation import streamlit_geolocation
 
-# ===== MongoDB =====
-from pymongo import MongoClient
-from bson.binary import Binary
-
-# ==================================================
-# 1. CONFIGURATION
-# ==================================================
-TWILIO_SID = "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-TWILIO_AUTH_TOKEN = "xxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-
-TWILIO_PHONE_NUMBER = "+15075195618"
-TWILIO_WHATSAPP_NUMBER = "whatsapp:+14155238886"
-
-EMERGENCY_CONTACTS = [
-    "+918130631551",
-    "+917678495189"
-]
-
-# ==================================================
-# 2. MONGODB CONNECTION (NON-SRV – STREAMLIT SAFE)
-# ==================================================
-MONGO_URI = (
-    "mongodb://USERNAME:PASSWORD@"
-    "cluster0-shard-00-00.xxxxx.mongodb.net:27017,"
-    "cluster0-shard-00-01.xxxxx.mongodb.net:27017,"
-    "cluster0-shard-00-02.xxxxx.mongodb.net:27017/"
-    "child_safety_db"
-    "?ssl=true&replicaSet=atlas-xxxxx-shard-0"
-    "&authSource=admin&retryWrites=true&w=majority"
+# ================== PAGE CONFIG ==================
+st.set_page_config(
+    page_title="AI Child Safety System",
+    page_icon="🛡️",
+    layout="centered"
 )
+st.title("🛡️ AI Child Safety System")
 
-@st.cache_resource
-def get_mongo_client():
-    return MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+# ================== DATABASE ==================
+DB_FILE = "child_safety.db"
 
-try:
-    mongo_client = get_mongo_client()
-    db = mongo_client["child_safety_db"]
-    children_col = db["children"]
-    sos_col = db["sos_logs"]
-except Exception as e:
-    st.error(f"MongoDB connection failed: {e}")
-    st.stop()
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
 
-# ===== Face Cascade =====
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS children (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        age INTEGER,
+        photo BLOB,
+        face BLOB,
+        clothing_color TEXT,
+        lost_location TEXT,
+        registered_at TEXT
+    )
+    """)
+
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS sos_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        latitude REAL,
+        longitude REAL,
+        time TEXT
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# ================== AI MODEL ==================
 FACE_CASCADE = cv2.CascadeClassifier(
     cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
 )
 
-st.set_page_config(page_title="SafeGuard AI", page_icon="🛡️", layout="centered")
-
-# ==================================================
-# 3. HELPER FUNCTIONS
-# ==================================================
 def extract_face(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     faces = FACE_CASCADE.detectMultiScale(gray, 1.3, 5)
@@ -69,156 +61,140 @@ def extract_face(image):
     return cv2.resize(gray[y:y+h, x:x+w], (200, 200))
 
 def compare_faces(f1, f2):
-    err = np.sum((f1.astype("float") - f2.astype("float")) ** 2)
-    err /= float(f1.shape[0] * f1.shape[1])
-    return err < 4000
+    error = np.mean((f1.astype("float") - f2.astype("float")) ** 2)
+    return error < 4000
 
-# ==================================================
-# 4. ALERT SYSTEM
-# ==================================================
-def send_alert_thread(contact, msg_body, speech, lang_code, log_container):
-    twilio_client = Client(TWILIO_SID, TWILIO_AUTH_TOKEN)
-    status = {}
+# ================== UI TABS ==================
+tab1, tab2, tab3 = st.tabs(
+    ["📝 Register Child", "🔍 Face Match", "🚨 Emergency SOS"]
+)
 
-    try:
-        twilio_client.messages.create(
-            from_=TWILIO_WHATSAPP_NUMBER,
-            to=f"whatsapp:{contact}",
-            body=msg_body
-        )
-        status["WhatsApp"] = "✅ Sent"
-    except Exception as e:
-        status["WhatsApp"] = f"❌ {e}"
-
-    try:
-        twilio_client.messages.create(
-            from_=TWILIO_PHONE_NUMBER,
-            to=contact,
-            body=msg_body
-        )
-        status["SMS"] = "✅ Sent"
-    except Exception as e:
-        status["SMS"] = f"❌ {e}"
-
-    try:
-        twilio_client.calls.create(
-            from_=TWILIO_PHONE_NUMBER,
-            to=contact,
-            twiml=f'<Response><Say language="{lang_code}">{speech}</Say></Response>'
-        )
-        status["Call"] = "✅ Initiated"
-    except Exception as e:
-        status["Call"] = f"❌ {e}"
-
-    log_container[contact] = status
-
-def trigger_sos(lat, lon, language):
-    timestamp = datetime.now().strftime("%d-%m-%Y %I:%M %p")
-    maps_link = f"https://www.google.com/maps?q={lat},{lon}"
-
-    child = children_col.find_one(sort=[("registered_at", -1)])
-    name = child["name"] if child else "Unknown Child"
-
-    msg_body = (
-        f"🚨 SOS ALERT 🚨\n"
-        f"Child: {name}\n"
-        f"📍 Location: {maps_link}\n"
-        f"⏰ Time: {timestamp}"
-    )
-
-    if language == "Hindi":
-        speech = f"Aapaatkaaleen alert. {name} ko madad chahiye."
-        lang_code = "hi-IN"
-    else:
-        speech = f"Emergency alert. {name} needs immediate help."
-        lang_code = "en-US"
-
-    logs = {}
-    threads = []
-
-    for contact in EMERGENCY_CONTACTS:
-        t = threading.Thread(
-            target=send_alert_thread,
-            args=(contact, msg_body, speech, lang_code, logs)
-        )
-        threads.append(t)
-        t.start()
-
-    for t in threads:
-        t.join()
-
-    sos_col.insert_one({
-        "latitude": lat,
-        "longitude": lon,
-        "time": timestamp,
-        "status": "Triggered"
-    })
-
-    return logs
-
-# ==================================================
-# 5. STREAMLIT UI
-# ==================================================
-st.title("🛡️ SafeGuard AI")
-
-tab1, tab2, tab3 = st.tabs(["📝 Registration", "🔍 Face Match", "🆘 SOS"])
-
-# ---------- REGISTRATION ----------
+# ================== TAB 1: REGISTRATION ==================
 with tab1:
-    with st.form("reg"):
+    st.header("Register Child")
+
+    with st.form("register"):
         name = st.text_input("Child Name")
         age = st.number_input("Age", 1, 18)
-        clothes = st.text_input("Clothing Color")
-        photo = st.file_uploader("Upload Photo", ["jpg", "png"])
+        clothing = st.text_input("Clothing Color")
+        lost_loc = st.text_input("Last Seen Location")
+        photo = st.file_uploader(
+            "Upload Recent Photo", ["jpg", "png", "jpeg"]
+        )
 
-        if st.form_submit_button("Register"):
-            if photo and name:
-                photo_bytes = photo.read()
-                img = cv2.imdecode(np.frombuffer(photo_bytes, np.uint8), cv2.IMREAD_COLOR)
+        if st.form_submit_button("Register Child"):
+            if name and photo:
+                img_bytes = photo.read()
+                img = cv2.imdecode(
+                    np.frombuffer(img_bytes, np.uint8),
+                    cv2.IMREAD_COLOR
+                )
                 face = extract_face(img)
 
                 if face is not None:
-                    children_col.insert_one({
-                        "name": name,
-                        "age": age,
-                        "clothing": clothes,
-                        "photo": Binary(photo_bytes),
-                        "face": Binary(face.tobytes()),
-                        "registered_at": datetime.now()
-                    })
-                    st.success("✅ Child Registered")
-                else:
-                    st.error("❌ No face detected")
+                    conn = sqlite3.connect(DB_FILE)
+                    conn.execute("""
+                        INSERT INTO children
+                        (name, age, photo, face, clothing_color, lost_location, registered_at)
+                        VALUES (?,?,?,?,?,?,?)
+                    """, (
+                        name,
+                        age,
+                        img_bytes,
+                        face.tobytes(),
+                        clothing,
+                        lost_loc,
+                        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    ))
+                    conn.commit()
+                    conn.close()
 
-# ---------- FACE MATCH ----------
+                    st.success("✅ Child registered successfully")
+                else:
+                    st.error("❌ No face detected in photo")
+            else:
+                st.warning("⚠️ Name and photo are required")
+
+# ================== TAB 2: FACE MATCH ==================
 with tab2:
-    child = children_col.find_one(sort=[("registered_at", -1)])
-    if child:
-        target_face = np.frombuffer(child["face"], dtype=np.uint8).reshape((200, 200))
+    st.header("Face Verification")
+
+    conn = sqlite3.connect(DB_FILE)
+    row = conn.execute("""
+        SELECT name, face
+        FROM children
+        ORDER BY id DESC
+        LIMIT 1
+    """).fetchone()
+    conn.close()
+
+    if row:
+        stored_name, stored_face = row
+        stored_face = np.frombuffer(
+            stored_face, dtype=np.uint8
+        ).reshape((200, 200))
+
+        st.info(f"Registered Child: **{stored_name}**")
+
         cam = st.camera_input("Scan Face")
 
         if cam:
-            img = cv2.imdecode(np.frombuffer(cam.read(), np.uint8), cv2.IMREAD_COLOR)
+            img = cv2.imdecode(
+                np.frombuffer(cam.read(), np.uint8),
+                cv2.IMREAD_COLOR
+            )
             face = extract_face(img)
 
-            if face is not None and compare_faces(target_face, face):
-                st.success("✅ MATCH FOUND")
+            if face is not None:
+                if compare_faces(stored_face, face):
+                    st.success("✅ MATCH FOUND")
+                    st.balloons()
+                else:
+                    st.error("❌ NO MATCH")
             else:
-                st.error("❌ NO MATCH")
+                st.warning("⚠️ No face detected")
+    else:
+        st.warning("No child registered yet")
 
-# ---------- SOS ----------
+# ================== TAB 3: SOS ==================
 with tab3:
-    language = st.selectbox("Voice Language", ["English", "Hindi"])
+    st.header("🚨 Emergency SOS")
+
     location = streamlit_geolocation()
 
-    if st.button("🆘 ACTIVATE SOS"):
+    if st.button("🚨 ACTIVATE SOS"):
         if location.get("latitude"):
-            logs = trigger_sos(
-                location["latitude"],
-                location["longitude"],
-                language
-            )
-            st.success("SOS Sent!")
-            st.json(logs)
+            lat = location["latitude"]
+            lon = location["longitude"]
+
+            conn = sqlite3.connect(DB_FILE)
+            conn.execute("""
+                INSERT INTO sos_logs (latitude, longitude, time)
+                VALUES (?,?,?)
+            """, (
+                lat,
+                lon,
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ))
+            conn.commit()
+            conn.close()
+
+            st.error("🚨 SOS TRIGGERED!")
+            st.write(f"📍 Location: {lat}, {lon}")
         else:
-            st.error("Location not available")
+            st.warning("⚠️ Location permission not granted")
+
+# ================== VIEW SOS LOGS ==================
+st.subheader("📂 Recent SOS Logs")
+
+conn = sqlite3.connect(DB_FILE)
+logs = conn.execute("""
+    SELECT latitude, longitude, time
+    FROM sos_logs
+    ORDER BY id DESC
+    LIMIT 5
+""").fetchall()
+conn.close()
+
+for log in logs:
+    st.write(f"📍 {log[0]}, {log[1]} | ⏰ {log[2]}")
