@@ -97,8 +97,8 @@ TWILIO_ACCOUNTS = [
 ]
 
 EMERGENCY_CONTACTS = [
-    "+91XXXXXXXXXX",
-    "+91XXXXXXXXXX"
+    "+917678495189",
+    "+918103631551"
 ]
 
 def send_sos_alert(lat, lon):
