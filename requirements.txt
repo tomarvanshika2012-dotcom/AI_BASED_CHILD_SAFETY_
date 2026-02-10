@@ -1,7 +1,7 @@
 streamlit
+numpy
+opencv-python-headless
 pymongo
 dnspython
-opencv-python
-numpy
 twilio
 streamlit-geolocation
