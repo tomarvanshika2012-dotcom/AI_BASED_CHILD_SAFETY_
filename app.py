@@ -2,7 +2,6 @@ import streamlit as st
 import cv2
 import numpy as np
 import threading
-import time
 from datetime import datetime
 from twilio.rest import Client
 from streamlit_geolocation import streamlit_geolocation
@@ -14,8 +13,8 @@ from bson.binary import Binary
 # ==================================================
 # 1. CONFIGURATION
 # ==================================================
-TWILIO_SID = "ACc9b9941c778de30e2ed7ba57f87cdfbc"
-TWILIO_AUTH_TOKEN = "2b2cf2200be3a515c496ffd9137d63c4"
+TWILIO_SID = "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+TWILIO_AUTH_TOKEN = "xxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
 TWILIO_PHONE_NUMBER = "+15075195618"
 TWILIO_WHATSAPP_NUMBER = "whatsapp:+14155238886"
@@ -25,13 +24,31 @@ EMERGENCY_CONTACTS = [
     "+917678495189"
 ]
 
-# ===== MongoDB Connection =====
-MONGO_URI = "mongodb+srv://USERNAME:PASSWORD@cluster0.mongodb.net/"
-client = MongoClient(MONGO_URI)
+# ==================================================
+# 2. MONGODB CONNECTION (NON-SRV – STREAMLIT SAFE)
+# ==================================================
+MONGO_URI = (
+    "mongodb://USERNAME:PASSWORD@"
+    "cluster0-shard-00-00.xxxxx.mongodb.net:27017,"
+    "cluster0-shard-00-01.xxxxx.mongodb.net:27017,"
+    "cluster0-shard-00-02.xxxxx.mongodb.net:27017/"
+    "child_safety_db"
+    "?ssl=true&replicaSet=atlas-xxxxx-shard-0"
+    "&authSource=admin&retryWrites=true&w=majority"
+)
 
-db = client["child_safety_db"]
-children_col = db["children"]
-sos_col = db["sos_logs"]
+@st.cache_resource
+def get_mongo_client():
+    return MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+
+try:
+    mongo_client = get_mongo_client()
+    db = mongo_client["child_safety_db"]
+    children_col = db["children"]
+    sos_col = db["sos_logs"]
+except Exception as e:
+    st.error(f"MongoDB connection failed: {e}")
+    st.stop()
 
 # ===== Face Cascade =====
 FACE_CASCADE = cv2.CascadeClassifier(
@@ -41,7 +58,7 @@ FACE_CASCADE = cv2.CascadeClassifier(
 st.set_page_config(page_title="SafeGuard AI", page_icon="🛡️", layout="centered")
 
 # ==================================================
-# 2. HELPER FUNCTIONS
+# 3. HELPER FUNCTIONS
 # ==================================================
 def extract_face(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -57,14 +74,14 @@ def compare_faces(f1, f2):
     return err < 4000
 
 # ==================================================
-# 3. ALERT SYSTEM
+# 4. ALERT SYSTEM
 # ==================================================
 def send_alert_thread(contact, msg_body, speech, lang_code, log_container):
-    client_twilio = Client(TWILIO_SID, TWILIO_AUTH_TOKEN)
+    twilio_client = Client(TWILIO_SID, TWILIO_AUTH_TOKEN)
     status = {}
 
     try:
-        client_twilio.messages.create(
+        twilio_client.messages.create(
             from_=TWILIO_WHATSAPP_NUMBER,
             to=f"whatsapp:{contact}",
             body=msg_body
@@ -74,7 +91,7 @@ def send_alert_thread(contact, msg_body, speech, lang_code, log_container):
         status["WhatsApp"] = f"❌ {e}"
 
     try:
-        client_twilio.messages.create(
+        twilio_client.messages.create(
             from_=TWILIO_PHONE_NUMBER,
             to=contact,
             body=msg_body
@@ -84,7 +101,7 @@ def send_alert_thread(contact, msg_body, speech, lang_code, log_container):
         status["SMS"] = f"❌ {e}"
 
     try:
-        client_twilio.calls.create(
+        twilio_client.calls.create(
             from_=TWILIO_PHONE_NUMBER,
             to=contact,
             twiml=f'<Response><Say language="{lang_code}">{speech}</Say></Response>'
@@ -140,7 +157,7 @@ def trigger_sos(lat, lon, language):
     return logs
 
 # ==================================================
-# 4. STREAMLIT UI
+# 5. STREAMLIT UI
 # ==================================================
 st.title("🛡️ SafeGuard AI")
 
@@ -156,7 +173,8 @@ with tab1:
 
         if st.form_submit_button("Register"):
             if photo and name:
-                img = cv2.imdecode(np.frombuffer(photo.read(), np.uint8), cv2.IMREAD_COLOR)
+                photo_bytes = photo.read()
+                img = cv2.imdecode(np.frombuffer(photo_bytes, np.uint8), cv2.IMREAD_COLOR)
                 face = extract_face(img)
 
                 if face is not None:
@@ -164,7 +182,7 @@ with tab1:
                         "name": name,
                         "age": age,
                         "clothing": clothes,
-                        "photo": Binary(photo.read()),
+                        "photo": Binary(photo_bytes),
                         "face": Binary(face.tobytes()),
                         "registered_at": datetime.now()
                     })
@@ -182,6 +200,7 @@ with tab2:
         if cam:
             img = cv2.imdecode(np.frombuffer(cam.read(), np.uint8), cv2.IMREAD_COLOR)
             face = extract_face(img)
+
             if face is not None and compare_faces(target_face, face):
                 st.success("✅ MATCH FOUND")
             else:
