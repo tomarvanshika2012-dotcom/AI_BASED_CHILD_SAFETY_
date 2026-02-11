@@ -1,7 +1,5 @@
-streamlit
-numpy
-opencv-python-headless
-pymongo
-dnspython
-twilio
-streamlit-geolocation
+streamlit==1.32.2
+supabase==2.3.4
+twilio==9.0.4
+streamlit-geolocation==0.0.10
+python-dotenv==1.0.1
