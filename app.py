@@ -4,6 +4,8 @@ import numpy as np
 from datetime import datetime
 from streamlit_geolocation import streamlit_geolocation
 from twilio.rest import Client
+import threading
+import speech_recognition as sr
 
 # ================== SAFE OPENCV IMPORT ==================
 try:
@@ -19,12 +21,6 @@ st.set_page_config(
     layout="centered"
 )
 st.title("🛡️ AI Child Safety System")
-
-if not CV2_AVAILABLE:
-    st.warning(
-        "⚠️ Camera-based AI is limited in this environment.\n"
-        "Image upload is available."
-    )
 
 # ================== DATABASE ==================
 DB_FILE = "child_safety.db"
@@ -60,7 +56,7 @@ def init_db():
 
 init_db()
 
-# ================== AI FUNCTIONS ==================
+# ================== FACE FUNCTIONS ==================
 if CV2_AVAILABLE:
     FACE_CASCADE = cv2.CascadeClassifier(
         cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
@@ -96,21 +92,15 @@ EMERGENCY_CONTACTS = [
     "+918130631551"
 ]
 
-def send_sos_alert(lat, lon):
+def send_sos_alert(lat, lon, reason="Manual"):
     msg = (
-        "🚨 CHILD SAFETY SOS 🚨\n"
+        f"🚨 CHILD SAFETY SOS ({reason}) 🚨\n"
         f"Location: https://www.google.com/maps?q={lat},{lon}"
     )
-    voice = (
-        "Emergency alert. A child safety SOS has been triggered. "
-        "Please check the location immediately."
-    )
-
-    success = False
+    voice = "Emergency alert. A child safety SOS has been triggered."
 
     for acc in TWILIO_ACCOUNTS:
         client = Client(acc["sid"], acc["token"])
-
         for num in EMERGENCY_CONTACTS:
             try:
                 client.messages.create(
@@ -123,19 +113,55 @@ def send_sos_alert(lat, lon):
                     from_=acc["phone"],
                     to=num
                 )
-                st.success(f"✅ SOS sent from {acc['phone']} → {num}")
-                success = True
+                st.success(f"✅ SOS sent to {num}")
             except Exception as e:
-                st.warning(f"❌ Failed from {acc['phone']} → {num}: {e}")
+                st.warning(f"❌ Failed to {num}: {e}")
 
-    return success
+# ================== SMART VOICE SOS ==================
 
-# ================== UI TABS ==================
+DISTRESS_WORDS = [
+    # English
+    "help", "save me", "danger", "i am scared",
+    "stop", "leave me", "call police", "emergency",
+    "i am in danger", "i am not safe",
+
+    # Hindi
+    "bachao", "madad", "khatra", "mujhe bachao",
+    "mujhe madad chahiye", "police bulao",
+    "mujhe dar lag raha hai", "mujhe chhod do"
+]
+
+def voice_monitor(lat, lon):
+    recognizer = sr.Recognizer()
+    mic = sr.Microphone()
+
+    st.info("🎤 Listening for distress keywords (Hindi + English)...")
+
+    try:
+        with mic as source:
+            recognizer.adjust_for_ambient_noise(source)
+            audio = recognizer.listen(source, phrase_time_limit=5)
+
+        text = recognizer.recognize_google(audio).lower()
+        st.write("🗣 Detected:", text)
+
+        for word in DISTRESS_WORDS:
+            if word in text:
+                send_sos_alert(lat, lon, reason="Voice Detected")
+                st.error("🚨 SMART SOS TRIGGERED (VOICE)")
+                return
+
+        st.success("No distress detected.")
+
+    except:
+        st.warning("Could not detect speech.")
+
+# ================== UI ==================
 tab1, tab2, tab3 = st.tabs(
-    ["📝 Register Child", "🔍 Face Match (Camera / Upload)", "🚨 Emergency SOS"]
+    ["📝 Register Child", "🔍 Face Match", "🚨 Emergency SOS"]
 )
 
-# ================== TAB 1: REGISTER ==================
+# ================== TAB 1 ==================
 with tab1:
     st.header("Register Child")
 
@@ -174,12 +200,10 @@ with tab1:
                 conn.close()
 
                 st.success("✅ Child registered successfully")
-            else:
-                st.warning("⚠️ Name and photo required")
 
-# ================== TAB 2: FACE MATCH (BROWSER + UPLOAD) ==================
+# ================== TAB 2 ==================
 with tab2:
-    st.header("🔍 Face Verification")
+    st.header("Face Verification")
 
     conn = sqlite3.connect(DB_FILE)
     row = conn.execute(
@@ -187,9 +211,7 @@ with tab2:
     ).fetchone()
     conn.close()
 
-    if not row or row[1] is None:
-        st.warning("No registered face available.")
-    else:
+    if row and row[1]:
         stored_name, stored_face = row
         stored_face = np.frombuffer(
             stored_face, dtype=np.uint8
@@ -205,14 +227,11 @@ with tab2:
         input_bytes = None
 
         if mode == "📷 Browser Camera":
-            cam = st.camera_input("Capture using browser camera")
+            cam = st.camera_input("Capture")
             if cam:
                 input_bytes = cam.read()
         else:
-            uploaded = st.file_uploader(
-                "Upload image for verification",
-                ["jpg", "png", "jpeg"]
-            )
+            uploaded = st.file_uploader("Upload Image", ["jpg", "png"])
             if uploaded:
                 input_bytes = uploaded.read()
 
@@ -227,35 +246,35 @@ with tab2:
                 st.error("❌ No face detected")
             elif compare_faces(stored_face, face):
                 st.success("✅ MATCH FOUND")
-                st.balloons()
             else:
                 st.error("❌ NO MATCH")
 
-# ================== TAB 3: SOS ==================
+# ================== TAB 3 ==================
 with tab3:
     st.header("🚨 Emergency SOS")
 
     location = streamlit_geolocation()
 
-    if st.button("🚨 ACTIVATE SOS"):
-        if location.get("latitude"):
-            lat, lon = location["latitude"], location["longitude"]
+    col1, col2 = st.columns(2)
 
-            conn = sqlite3.connect(DB_FILE)
-            conn.execute(
-                "INSERT INTO sos_logs (latitude, longitude, time) VALUES (?,?,?)",
-                (lat, lon, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-            )
-            conn.commit()
-            conn.close()
+    # Manual SOS
+    with col1:
+        if st.button("🚨 MANUAL SOS"):
+            if location.get("latitude"):
+                send_sos_alert(
+                    location["latitude"],
+                    location["longitude"],
+                    reason="Manual"
+                )
 
-            sent = send_sos_alert(lat, lon)
-            if sent:
-                st.error("🚨 SOS SENT SUCCESSFULLY")
-            else:
-                st.error("❌ SOS FAILED")
-        else:
-            st.warning("Location permission not granted")
+    # Smart Voice SOS
+    with col2:
+        if st.button("🎤 SMART VOICE SOS"):
+            if location.get("latitude"):
+                voice_monitor(
+                    location["latitude"],
+                    location["longitude"]
+                )
 
 # ================== SOS LOGS ==================
 st.subheader("📂 Recent SOS Logs")
