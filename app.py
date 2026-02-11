@@ -2,7 +2,6 @@ import streamlit as st
 from supabase import create_client
 from twilio.rest import Client
 from streamlit_geolocation import streamlit_geolocation
-import os
 
 # =====================================================
 # PAGE CONFIG
@@ -15,32 +14,29 @@ st.set_page_config(
 )
 
 # =====================================================
-# LOAD ENV VARIABLES (FROM STREAMLIT SECRETS)
+# LOAD SECRETS (STREAMLIT CLOUD)
 # =====================================================
 
-SUPABASE_URL = os.getenv("https://ejwzltprnsnufyelouwk.supabase.co")
-SUPABASE_KEY = os.getenv("sb_publishable_KMCudQSpc3rBICMuCd69Hw_7xoWBqK6")
+try:
+    SUPABASE_URL = st.secrets["https://ejwzltprnsnufyelouwk.supabase.co"]
+    SUPABASE_KEY = st.secrets["sb_publishable_KMCudQSpc3rBICMuCd69Hw_7xoWBqK6"]
 
-TWILIO_SID = os.getenv("ACc9b9941c778de30e2ed7ba57f87cdfbc")
-TWILIO_AUTH_TOKEN = os.getenv("447ac1385fd300bff05d08380e4a2bd4")
-TWILIO_PHONE = os.getenv("+15075195618")
-TWILIO_WHATSAPP = "whatsapp:+14155238886"  # Twilio sandbox
+    TWILIO_SID = st.secrets["ACc9b9941c778de30e2ed7ba57f87cdfbc"]
+    TWILIO_AUTH_TOKEN = st.secrets["447ac1385fd300bff05d08380e4a2bd4"]
+    TWILIO_PHONE = st.secrets["+15075195618"]
 
-# Safety check
-if not SUPABASE_URL or not SUPABASE_KEY:
-    st.error("Supabase credentials not configured.")
+except Exception:
+    st.error("❌ Secrets not configured. Please add them in Streamlit Cloud settings.")
     st.stop()
 
-if not TWILIO_SID or not TWILIO_AUTH_TOKEN or not TWILIO_PHONE:
-    st.error("Twilio credentials not configured.")
-    st.stop()
+TWILIO_WHATSAPP = "whatsapp:+14155238886"
 
 # Create Clients
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 twilio_client = Client(TWILIO_SID, TWILIO_AUTH_TOKEN)
 
 # =====================================================
-# APP TITLE
+# TITLE
 # =====================================================
 
 st.title("🛡️ AI Based Child Safety System")
@@ -90,7 +86,7 @@ with st.form("child_registration_form"):
                     "phone_no": phone_no,
                     "whatsapp_number": whatsapp_number
                 }
-
+r
                 supabase.table("parents").insert(parent_data).execute()
 
                 st.success("✅ Child Registered Successfully!")
@@ -108,7 +104,7 @@ st.header("🚨 Emergency SOS")
 try:
     children_response = supabase.table("children").select("*").execute()
     children = children_response.data
-except:
+except Exception:
     children = []
 
 if children:
@@ -125,74 +121,3 @@ if children:
         try:
             # Get selected child
             child = next(c for c in children if c["name"] == selected_child)
-
-            # Get parent details
-            parent_response = supabase.table("parents")\
-                .select("*")\
-                .eq("child_id", child["id"])\
-                .execute()
-
-            parent = parent_response.data[0]
-
-            # Get live location
-            if location_data and location_data.get("latitude"):
-                lat = location_data["latitude"]
-                lon = location_data["longitude"]
-                maps_link = f"https://www.google.com/maps?q={lat},{lon}"
-            else:
-                maps_link = "Location not available"
-
-            # Create message
-            message_body = f"""
-🚨 EMERGENCY SOS ALERT 🚨
-
-Child Name: {child['name']}
-Age: {child['age']}
-Clothing: {child['clothing']}
-
-Live Location:
-{maps_link}
-
-Please respond immediately!
-"""
-
-            # Send SMS
-            twilio_client.messages.create(
-                body=message_body,
-                from_=TWILIO_PHONE,
-                to=parent["phone_no"]
-            )
-
-            # Send WhatsApp
-            twilio_client.messages.create(
-                body=message_body,
-                from_=TWILIO_WHATSAPP,
-                to=f"whatsapp:{parent['whatsapp_number']}"
-            )
-
-            st.success("🚨 SOS Sent Successfully!")
-
-        except Exception as e:
-            st.error(f"SOS Error: {e}")
-
-else:
-    st.info("No registered children found. Please register first.")
-
-# =====================================================
-# ADMIN VIEW
-# =====================================================
-
-st.divider()
-st.header("📊 Registered Children")
-
-if children:
-    for child in children:
-        st.markdown(f"""
-        **Name:** {child['name']}  
-        **Age:** {child['age']}  
-        **Clothing:** {child['clothing']}  
-        **Last Location:** {child['last_location']}
-        """)
-        st.divider()
-else:
-    st.write("No records available.")
