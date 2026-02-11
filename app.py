@@ -1,289 +1,144 @@
 import streamlit as st
-import sqlite3
-import numpy as np
-from datetime import datetime
-from streamlit_geolocation import streamlit_geolocation
+from supabase import create_client
 from twilio.rest import Client
-import threading
-import speech_recognition as sr
+from streamlit_geolocation import streamlit_geolocation
+from datetime import datetime
 
-# ================== SAFE OPENCV IMPORT ==================
-try:
-    import cv2
-    CV2_AVAILABLE = True
-except Exception:
-    CV2_AVAILABLE = False
+# ============================================
+# CONFIGURATION
+# ============================================
 
-# ================== PAGE CONFIG ==================
-st.set_page_config(
-    page_title="AI Child Safety System",
-    page_icon="🛡️",
-    layout="centered"
-)
-st.title("🛡️ AI Child Safety System")
+st.set_page_config(page_title="Child Safety SOS", page_icon="🛡️")
 
-# ================== DATABASE ==================
-DB_FILE = "child_safety.db"
+# 🔹 SUPABASE CONFIG
+SUPABASE_URL = "https://ejwzltprnsnufyelouwk.supabase.co"
+SUPABASE_KEY = "sb_publishable_KMCudQSpc3rBICMuCd69Hw_7xoWBqK6"
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
+# 🔹 TWILIO CONFIG
+TWILIO_SID = "ACc9b9941c778de30e2ed7ba57f87cdfbc"
+TWILIO_AUTH_TOKEN = "447ac1385fd300bff05d08380e4a2bd4"
+TWILIO_PHONE = "+15075195618"  # Twilio SMS number
+TWILIO_WHATSAPP = "whatsapp:+14155238886"  # Twilio WhatsApp sandbox number
 
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS children (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT,
-        age INTEGER,
-        photo BLOB,
-        face BLOB,
-        clothing_color TEXT,
-        lost_location TEXT,
-        registered_at TEXT
-    )
-    """)
+twilio_client = Client(TWILIO_SID, TWILIO_AUTH_TOKEN)
 
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS sos_logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        latitude REAL,
-        longitude REAL,
-        time TEXT
-    )
-    """)
+# ============================================
+# TITLE
+# ============================================
 
-    conn.commit()
-    conn.close()
+st.title("🛡️ Child Safety System")
 
-init_db()
+# ============================================
+# REGISTER CHILD SECTION
+# ============================================
 
-# ================== FACE FUNCTIONS ==================
-if CV2_AVAILABLE:
-    FACE_CASCADE = cv2.CascadeClassifier(
-        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-    )
-else:
-    FACE_CASCADE = None
+with st.form("child_form"):
 
-def extract_face(image):
-    if not CV2_AVAILABLE or FACE_CASCADE is None:
-        return None
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    faces = FACE_CASCADE.detectMultiScale(gray, 1.3, 5)
-    if len(faces) == 0:
-        return None
-    x, y, w, h = faces[0]
-    return cv2.resize(gray[y:y+h, x:x+w], (200, 200))
+    st.subheader("👶 Child Information")
 
-def compare_faces(f1, f2):
-    error = np.mean((f1.astype("float") - f2.astype("float")) ** 2)
-    return error < 4000
+    name = st.text_input("Child Name")
+    age = st.number_input("Age", min_value=1, max_value=18)
+    clothing = st.text_input("Clothing Description")
+    location = st.text_input("Last Known Location")
 
-# ================== TWILIO CONFIG ==================
-TWILIO_ACCOUNTS = [
-    {
-        "sid": "ACc9b9941c778de30e2ed7ba57f87cdfbc",
-        "token": "447ac1385fd300bff05d08380e4a2bd4",
-        "phone": "+15075195618"
-    }
-]
+    st.subheader("👨‍👩‍👧 Parent Information")
 
-EMERGENCY_CONTACTS = [
-    "+917678495189",
-    "+918130631551"
-]
+    parent_name = st.text_input("Parent Name")
+    phone_no = st.text_input("Phone Number (+91...)")
+    whatsapp_number = st.text_input("WhatsApp Number (+91...)")
 
-def send_sos_alert(lat, lon, reason="Manual"):
-    msg = (
-        f"🚨 CHILD SAFETY SOS ({reason}) 🚨\n"
-        f"Location: https://www.google.com/maps?q={lat},{lon}"
-    )
-    voice = "Emergency alert. A child safety SOS has been triggered."
+    submitted = st.form_submit_button("Register Child")
 
-    for acc in TWILIO_ACCOUNTS:
-        client = Client(acc["sid"], acc["token"])
-        for num in EMERGENCY_CONTACTS:
-            try:
-                client.messages.create(
-                    body=msg,
-                    from_=acc["phone"],
-                    to=num
-                )
-                client.calls.create(
-                    twiml=f"<Response><Say>{voice}</Say></Response>",
-                    from_=acc["phone"],
-                    to=num
-                )
-                st.success(f"✅ SOS sent to {num}")
-            except Exception as e:
-                st.warning(f"❌ Failed to {num}: {e}")
+    if submitted:
+        try:
+            child_data = {
+                "name": name,
+                "age": age,
+                "clothing": clothing,
+                "last_location": location
+            }
 
-# ================== SMART VOICE SOS ==================
+            child_response = supabase.table("children").insert(child_data).execute()
+            child_id = child_response.data[0]["id"]
 
-DISTRESS_WORDS = [
-    # English
-    "help", "save me", "danger", "i am scared",
-    "stop", "leave me", "call police", "emergency",
-    "i am in danger", "i am not safe",
+            parent_data = {
+                "child_id": child_id,
+                "parent_name": parent_name,
+                "phone_no": phone_no,
+                "whatsapp_number": whatsapp_number
+            }
 
-    # Hindi
-    "bachao", "madad", "khatra", "mujhe bachao",
-    "mujhe madad chahiye", "police bulao",
-    "mujhe dar lag raha hai", "mujhe chhod do"
-]
+            supabase.table("parents").insert(parent_data).execute()
 
-def voice_monitor(lat, lon):
-    recognizer = sr.Recognizer()
-    mic = sr.Microphone()
+            st.success("✅ Child Registered Successfully!")
 
-    st.info("🎤 Listening for distress keywords (Hindi + English)...")
+        except Exception as e:
+            st.error(f"Error: {e}")
 
-    try:
-        with mic as source:
-            recognizer.adjust_for_ambient_noise(source)
-            audio = recognizer.listen(source, phrase_time_limit=5)
+# ============================================
+# SOS SECTION
+# ============================================
 
-        text = recognizer.recognize_google(audio).lower()
-        st.write("🗣 Detected:", text)
+st.divider()
+st.subheader("🚨 EMERGENCY SOS")
 
-        for word in DISTRESS_WORDS:
-            if word in text:
-                send_sos_alert(lat, lon, reason="Voice Detected")
-                st.error("🚨 SMART SOS TRIGGERED (VOICE)")
-                return
+children = supabase.table("children").select("*").execute().data
 
-        st.success("No distress detected.")
+if children:
+    child_names = [child["name"] for child in children]
+    selected_child = st.selectbox("Select Child", child_names)
 
-    except:
-        st.warning("Could not detect speech.")
+    location_data = streamlit_geolocation()
 
-# ================== UI ==================
-tab1, tab2, tab3 = st.tabs(
-    ["📝 Register Child", "🔍 Face Match", "🚨 Emergency SOS"]
-)
+    if st.button("🚨 SEND SOS ALERT"):
 
-# ================== TAB 1 ==================
-with tab1:
-    st.header("Register Child")
+        try:
+            # Get selected child details
+            child = next(c for c in children if c["name"] == selected_child)
 
-    with st.form("register"):
-        name = st.text_input("Child Name")
-        age = st.number_input("Age", 1, 18)
-        clothing = st.text_input("Clothing Color")
-        lost_loc = st.text_input("Last Seen Location")
-        photo = st.file_uploader("Upload Recent Photo", ["jpg", "png", "jpeg"])
+            # Get parent info
+            parent = supabase.table("parents").select("*").eq("child_id", child["id"]).execute().data[0]
 
-        if st.form_submit_button("Register Child"):
-            if name and photo:
-                img_bytes = photo.read()
-                face_bytes = None
-
-                if CV2_AVAILABLE:
-                    img = cv2.imdecode(
-                        np.frombuffer(img_bytes, np.uint8),
-                        cv2.IMREAD_COLOR
-                    )
-                    face = extract_face(img)
-                    if face is not None:
-                        face_bytes = face.tobytes()
-
-                conn = sqlite3.connect(DB_FILE)
-                conn.execute("""
-                    INSERT INTO children
-                    (name, age, photo, face, clothing_color, lost_location, registered_at)
-                    VALUES (?,?,?,?,?,?,?)
-                """, (
-                    name, age, img_bytes, face_bytes,
-                    clothing, lost_loc,
-                    datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                ))
-                conn.commit()
-                conn.close()
-
-                st.success("✅ Child registered successfully")
-
-# ================== TAB 2 ==================
-with tab2:
-    st.header("Face Verification")
-
-    conn = sqlite3.connect(DB_FILE)
-    row = conn.execute(
-        "SELECT name, face FROM children ORDER BY id DESC LIMIT 1"
-    ).fetchone()
-    conn.close()
-
-    if row and row[1]:
-        stored_name, stored_face = row
-        stored_face = np.frombuffer(
-            stored_face, dtype=np.uint8
-        ).reshape((200, 200))
-
-        st.info(f"Registered Child: **{stored_name}**")
-
-        mode = st.radio(
-            "Choose input method",
-            ["📷 Browser Camera", "📁 Upload Image"]
-        )
-
-        input_bytes = None
-
-        if mode == "📷 Browser Camera":
-            cam = st.camera_input("Capture")
-            if cam:
-                input_bytes = cam.read()
-        else:
-            uploaded = st.file_uploader("Upload Image", ["jpg", "png"])
-            if uploaded:
-                input_bytes = uploaded.read()
-
-        if input_bytes and CV2_AVAILABLE:
-            img = cv2.imdecode(
-                np.frombuffer(input_bytes, np.uint8),
-                cv2.IMREAD_COLOR
-            )
-            face = extract_face(img)
-
-            if face is None:
-                st.error("❌ No face detected")
-            elif compare_faces(stored_face, face):
-                st.success("✅ MATCH FOUND")
+            # Get live location
+            if location_data and location_data["latitude"]:
+                lat = location_data["latitude"]
+                lon = location_data["longitude"]
+                maps_link = f"https://www.google.com/maps?q={lat},{lon}"
             else:
-                st.error("❌ NO MATCH")
+                maps_link = "Location not available"
 
-# ================== TAB 3 ==================
-with tab3:
-    st.header("🚨 Emergency SOS")
+            # Create SOS message
+            message_body = f"""
+🚨 EMERGENCY SOS ALERT 🚨
 
-    location = streamlit_geolocation()
+Child Name: {child['name']}
+Age: {child['age']}
+Clothing: {child['clothing']}
 
-    col1, col2 = st.columns(2)
+Live Location:
+{maps_link}
 
-    # Manual SOS
-    with col1:
-        if st.button("🚨 MANUAL SOS"):
-            if location.get("latitude"):
-                send_sos_alert(
-                    location["latitude"],
-                    location["longitude"],
-                    reason="Manual"
-                )
+Please respond immediately!
+"""
 
-    # Smart Voice SOS
-    with col2:
-        if st.button("🎤 SMART VOICE SOS"):
-            if location.get("latitude"):
-                voice_monitor(
-                    location["latitude"],
-                    location["longitude"]
-                )
+            # 🔹 Send SMS
+            twilio_client.messages.create(
+                body=message_body,
+                from_=TWILIO_PHONE,
+                to=parent["phone_no"]
+            )
 
-# ================== SOS LOGS ==================
-st.subheader("📂 Recent SOS Logs")
+            # 🔹 Send WhatsApp
+            twilio_client.messages.create(
+                body=message_body,
+                from_=TWILIO_WHATSAPP,
+                to=f"whatsapp:{parent['whatsapp_number']}"
+            )
 
-conn = sqlite3.connect(DB_FILE)
-logs = conn.execute(
-    "SELECT latitude, longitude, time FROM sos_logs ORDER BY id DESC LIMIT 5"
-).fetchall()
-conn.close()
+            st.success("🚨 SOS Sent Successfully!")
 
-for log in logs:
-    st.write(f"📍 {log[0]}, {log[1]} | ⏰ {log[2]}")
+        except Exception as e:
+            st.error(f"SOS Error: {e}")
+else:
+    st.info("No registered children found.")
