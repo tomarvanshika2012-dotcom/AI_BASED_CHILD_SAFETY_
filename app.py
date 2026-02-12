@@ -3,22 +3,21 @@ from supabase import create_client
 from twilio.rest import Client
 from streamlit_geolocation import streamlit_geolocation
 
-# =====================================================
+# ===============================
 # PAGE CONFIG
-# =====================================================
+# ===============================
 
 st.set_page_config(
-    page_title="AI Based Child Safety System",
+    page_title="AI Child Safety System",
     page_icon="🛡️",
     layout="centered"
 )
 
-st.title("🛡️ AI Based Child Safety System")
-st.markdown("Cloud-connected child registration and emergency SOS system.")
+st.title("🛡️ AI Child Safety System")
 
-# =====================================================
+# ===============================
 # LOAD SECRETS
-# =====================================================
+# ===============================
 
 try:
     SUPABASE_URL = st.secrets["SUPABASE_URL"]
@@ -33,28 +32,36 @@ except Exception:
     st.error("❌ Secrets not configured properly in Streamlit Cloud.")
     st.stop()
 
-# Create clients
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-twilio_client = Client(TWILIO_SID, TWILIO_AUTH_TOKEN)
+# ===============================
+# CREATE CLIENTS
+# ===============================
 
-# =====================================================
+try:
+    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+except Exception as e:
+    st.error(f"❌ Supabase Connection Failed: {e}")
+    st.stop()
+
+try:
+    twilio_client = Client(TWILIO_SID, TWILIO_AUTH_TOKEN)
+except:
+    twilio_client = None
+
+# ===============================
 # CHILD REGISTRATION
-# =====================================================
+# ===============================
 
 st.header("👶 Register Child")
 
-with st.form("child_registration_form"):
-
+with st.form("child_form"):
     name = st.text_input("Child Name")
-    age = st.number_input("Age", min_value=1, max_value=18)
+    age = st.number_input("Age", 1, 18)
     clothing = st.text_input("Clothing Description")
     last_location = st.text_input("Last Known Location")
 
-    st.subheader("👨‍👩‍👧 Parent Details")
-
     parent_name = st.text_input("Parent Name")
-    phone_no = st.text_input("Parent Phone Number (+91...)")
-    whatsapp_number = st.text_input("Parent WhatsApp Number (+91...)")
+    phone_no = st.text_input("Parent Phone (+91...)")
+    whatsapp_no = st.text_input("Parent WhatsApp (+91...)")
 
     submitted = st.form_submit_button("Register")
 
@@ -71,15 +78,15 @@ with st.form("child_registration_form"):
                     "last_location": last_location
                 }
 
-                child_response = supabase.table("children").insert(child_data).execute()
-                child_id = child_response.data[0]["id"]
+                result = supabase.table("children").insert(child_data).execute()
+                child_id = result.data[0]["id"]
 
                 # Insert parent
                 parent_data = {
                     "child_id": child_id,
                     "parent_name": parent_name,
                     "phone_no": phone_no,
-                    "whatsapp_number": whatsapp_number
+                    "whatsapp_number": whatsapp_no
                 }
 
                 supabase.table("parents").insert(parent_data).execute()
@@ -89,38 +96,40 @@ with st.form("child_registration_form"):
             except Exception as e:
                 st.error(f"Database Error: {e}")
 
-# =====================================================
+# ===============================
 # SOS SECTION
-# =====================================================
+# ===============================
 
 st.divider()
 st.header("🚨 Emergency SOS")
 
 try:
-    children_response = supabase.table("children").select("*").execute()
-    children = children_response.data
-except Exception as e:
-    st.error(f"Error loading children: {e}")
+    children_data = supabase.table("children").select("*").execute()
+    children = children_data.data
+except:
     children = []
 
 if children:
-
     child_names = [child["name"] for child in children]
     selected_child = st.selectbox("Select Child", child_names)
 
-    st.info("Allow location access when prompted.")
-
-    location_data = streamlit_geolocation()
+    location = streamlit_geolocation()
 
     if st.button("🚨 SEND SOS ALERT"):
 
+        if not location.get("latitude"):
+            st.warning("Please allow location access.")
+            st.stop()
+
         try:
-            # Get selected child
             child = next(c for c in children if c["name"] == selected_child)
 
-            # Get parent
-            parent_response = supabase.table("parents").select("*").eq("child_id", child["id"]).execute()
-            parents = parent_response.data
+            parent_data = supabase.table("parents") \
+                .select("*") \
+                .eq("child_id", child["id"]) \
+                .execute()
+
+            parents = parent_data.data
 
             if not parents:
                 st.warning("No parent found for this child.")
@@ -128,17 +137,10 @@ if children:
 
             parent = parents[0]
 
-            latitude = location_data.get("latitude")
-            longitude = location_data.get("longitude")
-
-            if not latitude:
-                st.warning("Location permission not granted.")
-                st.stop()
-
             message = f"""
 🚨 CHILD SOS ALERT 🚨
 Child: {child['name']}
-Location: https://www.google.com/maps?q={latitude},{longitude}
+Location: https://www.google.com/maps?q={location['latitude']},{location['longitude']}
 """
 
             # Send SMS
@@ -157,7 +159,7 @@ Location: https://www.google.com/maps?q={latitude},{longitude}
 
             # Make Call
             twilio_client.calls.create(
-                twiml=f"<Response><Say>Emergency alert for {child['name']}. Please check your phone immediately.</Say></Response>",
+                twiml=f"<Response><Say>Emergency alert for {child['name']}</Say></Response>",
                 from_=TWILIO_PHONE,
                 to=parent["phone_no"]
             )
