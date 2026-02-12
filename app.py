@@ -13,34 +13,29 @@ st.set_page_config(
     layout="centered"
 )
 
+st.title("🛡️ AI Based Child Safety System")
+st.markdown("Cloud-connected child registration and emergency SOS system.")
+
 # =====================================================
-# LOAD SECRETS (STREAMLIT CLOUD)
+# LOAD SECRETS
 # =====================================================
 
 try:
-    SUPABASE_URL = st.secrets["https://ejwzltprnsnufyelouwk.supabase.co"]
-    SUPABASE_KEY = st.secrets["sb_publishable_KMCudQSpc3rBICMuCd69Hw_7xoWBqK6"]
+    SUPABASE_URL = st.secrets["SUPABASE_URL"]
+    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
-    TWILIO_SID = st.secrets["ACc9b9941c778de30e2ed7ba57f87cdfbc"]
-    TWILIO_AUTH_TOKEN = st.secrets["447ac1385fd300bff05d08380e4a2bd4"]
-    TWILIO_PHONE = st.secrets["+15075195618"]
+    TWILIO_SID = st.secrets["TWILIO_SID"]
+    TWILIO_AUTH_TOKEN = st.secrets["TWILIO_AUTH_TOKEN"]
+    TWILIO_PHONE = st.secrets["TWILIO_PHONE"]
+    TWILIO_WHATSAPP = st.secrets["TWILIO_WHATSAPP"]
 
 except Exception:
-    st.error("❌ Secrets not configured. Please add them in Streamlit Cloud settings.")
+    st.error("❌ Secrets not configured properly in Streamlit Cloud.")
     st.stop()
 
-TWILIO_WHATSAPP = "whatsapp:+14155238886"
-
-# Create Clients
+# Create clients
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 twilio_client = Client(TWILIO_SID, TWILIO_AUTH_TOKEN)
-
-# =====================================================
-# TITLE
-# =====================================================
-
-st.title("🛡️ AI Based Child Safety System")
-st.markdown("Cloud-connected child registration and emergency SOS system.")
 
 # =====================================================
 # CHILD REGISTRATION
@@ -86,7 +81,7 @@ with st.form("child_registration_form"):
                     "phone_no": phone_no,
                     "whatsapp_number": whatsapp_number
                 }
-r
+
                 supabase.table("parents").insert(parent_data).execute()
 
                 st.success("✅ Child Registered Successfully!")
@@ -104,7 +99,8 @@ st.header("🚨 Emergency SOS")
 try:
     children_response = supabase.table("children").select("*").execute()
     children = children_response.data
-except Exception:
+except Exception as e:
+    st.error(f"Error loading children: {e}")
     children = []
 
 if children:
@@ -121,3 +117,55 @@ if children:
         try:
             # Get selected child
             child = next(c for c in children if c["name"] == selected_child)
+
+            # Get parent
+            parent_response = supabase.table("parents").select("*").eq("child_id", child["id"]).execute()
+            parents = parent_response.data
+
+            if not parents:
+                st.warning("No parent found for this child.")
+                st.stop()
+
+            parent = parents[0]
+
+            latitude = location_data.get("latitude")
+            longitude = location_data.get("longitude")
+
+            if not latitude:
+                st.warning("Location permission not granted.")
+                st.stop()
+
+            message = f"""
+🚨 CHILD SOS ALERT 🚨
+Child: {child['name']}
+Location: https://www.google.com/maps?q={latitude},{longitude}
+"""
+
+            # Send SMS
+            twilio_client.messages.create(
+                body=message,
+                from_=TWILIO_PHONE,
+                to=parent["phone_no"]
+            )
+
+            # Send WhatsApp
+            twilio_client.messages.create(
+                body=message,
+                from_=TWILIO_WHATSAPP,
+                to=f"whatsapp:{parent['whatsapp_number']}"
+            )
+
+            # Make Call
+            twilio_client.calls.create(
+                twiml=f"<Response><Say>Emergency alert for {child['name']}. Please check your phone immediately.</Say></Response>",
+                from_=TWILIO_PHONE,
+                to=parent["phone_no"]
+            )
+
+            st.success("✅ SOS Alert Sent Successfully!")
+
+        except Exception as e:
+            st.error(f"SOS Error: {e}")
+
+else:
+    st.info("No children registered yet.")
