@@ -1,5 +1,10 @@
-streamlit==1.32.2
-supabase==2.3.4
-twilio==9.0.4
-streamlit-geolocation==0.0.10
-python-dotenv==1.0.1
+streamlit
+flask
+requests
+twilio
+streamlit-webrtc
+face_recognition
+opencv-python
+numpy
+streamlit-geolocation
+av

@@ -1,173 +1,231 @@
 import streamlit as st
-from supabase import create_client
+import requests
+import json
+import cv2
+import numpy as np
+import face_recognition
+from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
 from twilio.rest import Client
 from streamlit_geolocation import streamlit_geolocation
 
-# ===============================
-# PAGE CONFIG
-# ===============================
+# ================= CONFIG =================
+BACKEND_URL = "http://127.0.0.1:5000"
 
-st.set_page_config(
-    page_title="AI Child Safety System",
-    page_icon="🛡️",
-    layout="centered"
-)
+TWILIO_SID = "ACc9b9941c778de30e2ed7ba57f87cdfbc"
+TWILIO_AUTH = "999fa232d9d9e8523039eab01ad41288"
+TWILIO_PHONE = "+15075195618"
 
+twilio_client = Client(TWILIO_SID, TWILIO_AUTH)
+
+st.set_page_config(page_title="AI Child Safety", page_icon="🛡️")
 st.title("🛡️ AI Child Safety System")
 
-# ===============================
-# LOAD SECRETS
-# ===============================
+# ================= LOAD CHILDREN =================
+def load_children():
+    try:
+        return requests.get(f"{BACKEND_URL}/children").json()
+    except:
+        st.error("❌ Backend not running")
+        return []
 
-try:
-    SUPABASE_URL = st.secrets["SUPABASE_URL"]
-    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+children = load_children()
 
-    TWILIO_SID = st.secrets["TWILIO_SID"]
-    TWILIO_AUTH_TOKEN = st.secrets["TWILIO_AUTH_TOKEN"]
-    TWILIO_PHONE = st.secrets["TWILIO_PHONE"]
-    TWILIO_WHATSAPP = st.secrets["TWILIO_WHATSAPP"]
+# ================= TABS =================
+tab1, tab2, tab3, tab4 = st.tabs([
+    "👶 Register Child",
+    "🚨 Emergency SOS",
+    "🎥 Live Face Recognition",
+    "📋 View Children"
+])
 
-except Exception:
-    st.error("❌ Secrets not configured properly in Streamlit Cloud.")
-    st.stop()
+# ==================================================
+# TAB 1 — REGISTER
+# ==================================================
+with tab1:
 
-# ===============================
-# CREATE CLIENTS
-# ===============================
+    st.header("Register Child")
 
-try:
-    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-except Exception as e:
-    st.error(f"❌ Supabase Connection Failed: {e}")
-    st.stop()
-
-try:
-    twilio_client = Client(TWILIO_SID, TWILIO_AUTH_TOKEN)
-except:
-    twilio_client = None
-
-# ===============================
-# CHILD REGISTRATION
-# ===============================
-
-st.header("👶 Register Child")
-
-with st.form("child_form"):
     name = st.text_input("Child Name")
     age = st.number_input("Age", 1, 18)
-    clothing = st.text_input("Clothing Description")
-    last_location = st.text_input("Last Known Location")
-
+    clothing = st.text_input("Clothing")
+    last_location = st.text_input("Last Location")
     parent_name = st.text_input("Parent Name")
     phone_no = st.text_input("Parent Phone (+91...)")
-    whatsapp_no = st.text_input("Parent WhatsApp (+91...)")
+    whatsapp_no = st.text_input("Parent WhatsApp")
 
-    submitted = st.form_submit_button("Register")
+    uploaded = st.file_uploader("Upload Clear Face Photo")
 
-    if submitted:
-        if not name or not parent_name:
-            st.warning("Please fill required fields.")
+    face_encoding_json = None
+
+    if uploaded:
+        image = face_recognition.load_image_file(uploaded)
+        encodings = face_recognition.face_encodings(image)
+
+        if encodings:
+            face_encoding_json = json.dumps(encodings[0].tolist())
+            st.success("✅ Face Detected")
         else:
-            try:
-                # Insert child
-                child_data = {
-                    "name": name,
-                    "age": age,
-                    "clothing": clothing,
-                    "last_location": last_location
-                }
+            st.error("❌ No face detected")
 
-                result = supabase.table("children").insert(child_data).execute()
-                child_id = result.data[0]["id"]
+    if st.button("Register Child"):
 
-                # Insert parent
-                parent_data = {
-                    "child_id": child_id,
-                    "parent_name": parent_name,
-                    "phone_no": phone_no,
-                    "whatsapp_number": whatsapp_no
-                }
+        if not face_encoding_json:
+            st.warning("Upload valid face image")
+        else:
+            data = {
+                "name": name,
+                "age": age,
+                "clothing": clothing,
+                "last_location": last_location,
+                "parent_name": parent_name,
+                "phone_no": phone_no,
+                "whatsapp_no": whatsapp_no,
+                "face_encoding": face_encoding_json
+            }
 
-                supabase.table("parents").insert(parent_data).execute()
+            res = requests.post(f"{BACKEND_URL}/register", json=data)
 
-                st.success("✅ Child Registered Successfully!")
+            if res.status_code == 200:
+                st.success("✅ Registered Successfully")
+            else:
+                st.error("❌ Registration Failed")
 
-            except Exception as e:
-                st.error(f"Database Error: {e}")
+# ==================================================
+# TAB 2 — SOS
+# ==================================================
+with tab2:
 
-# ===============================
-# SOS SECTION
-# ===============================
+    st.header("Emergency SOS")
 
-st.divider()
-st.header("🚨 Emergency SOS")
+    if children:
 
-try:
-    children_data = supabase.table("children").select("*").execute()
-    children = children_data.data
-except:
-    children = []
+        names = [c["name"] for c in children]
+        selected = st.selectbox("Select Child", names)
 
-if children:
-    child_names = [child["name"] for child in children]
-    selected_child = st.selectbox("Select Child", child_names)
+        location = streamlit_geolocation()
 
-    location = streamlit_geolocation()
+        if st.button("SEND SOS"):
 
-    if st.button("🚨 SEND SOS ALERT"):
+            if not location or not location.get("latitude"):
+                st.error("❌ Location not available")
+            else:
+                child = next(c for c in children if c["name"] == selected)
 
-        if not location.get("latitude"):
-            st.warning("Please allow location access.")
-            st.stop()
+                lat = location["latitude"]
+                lon = location["longitude"]
 
-        try:
-            child = next(c for c in children if c["name"] == selected_child)
-
-            parent_data = supabase.table("parents") \
-                .select("*") \
-                .eq("child_id", child["id"]) \
-                .execute()
-
-            parents = parent_data.data
-
-            if not parents:
-                st.warning("No parent found for this child.")
-                st.stop()
-
-            parent = parents[0]
-
-            message = f"""
+                message = f"""
 🚨 CHILD SOS ALERT 🚨
 Child: {child['name']}
-Location: https://www.google.com/maps?q={location['latitude']},{location['longitude']}
+Location: https://www.google.com/maps?q={lat},{lon}
 """
 
-            # Send SMS
-            twilio_client.messages.create(
-                body=message,
-                from_=TWILIO_PHONE,
-                to=parent["phone_no"]
+                try:
+                    # SMS
+                    twilio_client.messages.create(
+                        body=message,
+                        from_=TWILIO_PHONE,
+                        to=child["phone_no"]
+                    )
+
+                    # CALL
+                    twilio_client.calls.create(
+                        twiml="""
+                        <Response>
+                            <Say>
+                                Emergency alert.
+                                A child safety SOS has been triggered.
+                                Please check the message immediately.
+                            </Say>
+                        </Response>
+                        """,
+                        from_=TWILIO_PHONE,
+                        to=child["phone_no"]
+                    )
+
+                    st.success("✅ SMS + Call Sent")
+
+                except Exception as e:
+                    st.error(f"Twilio Error: {e}")
+
+    else:
+        st.info("No children registered")
+
+# ==================================================
+# TAB 3 — LIVE FACE RECOGNITION
+# ==================================================
+with tab3:
+
+    st.header("Live Face Recognition")
+
+    if children:
+
+        names = [c["name"] for c in children]
+        selected_face = st.selectbox("Select Child", names, key="face_tab")
+
+        child = next(c for c in children if c["name"] == selected_face)
+
+        if child["face_encoding"]:
+
+            known_encoding = np.array(json.loads(child["face_encoding"]))
+
+            class VideoProcessor(VideoTransformerBase):
+                def recv(self, frame):
+                    img = frame.to_ndarray(format="bgr24")
+                    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+                    face_locations = face_recognition.face_locations(rgb)
+                    face_encodings = face_recognition.face_encodings(rgb, face_locations)
+
+                    for encoding, location in zip(face_encodings, face_locations):
+
+                        matches = face_recognition.compare_faces(
+                            [known_encoding], encoding
+                        )
+
+                        top, right, bottom, left = location
+
+                        if True in matches:
+                            color = (0, 255, 0)
+                            label = "MATCH"
+                        else:
+                            color = (0, 0, 255)
+                            label = "NO MATCH"
+
+                        cv2.rectangle(img, (left, top), (right, bottom), color, 2)
+                        cv2.putText(
+                            img,
+                            label,
+                            (left, top - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.9,
+                            color,
+                            2,
+                        )
+
+                    return img
+
+            webrtc_streamer(
+                key="face-recognition",
+                video_processor_factory=VideoProcessor,
+                media_stream_constraints={"video": True, "audio": False},
             )
 
-            # Send WhatsApp
-            twilio_client.messages.create(
-                body=message,
-                from_=TWILIO_WHATSAPP,
-                to=f"whatsapp:{parent['whatsapp_number']}"
-            )
+        else:
+            st.warning("No face encoding stored")
 
-            # Make Call
-            twilio_client.calls.create(
-                twiml=f"<Response><Say>Emergency alert for {child['name']}</Say></Response>",
-                from_=TWILIO_PHONE,
-                to=parent["phone_no"]
-            )
+    else:
+        st.info("No children registered")
 
-            st.success("✅ SOS Alert Sent Successfully!")
+# ==================================================
+# TAB 4 — VIEW CHILDREN
+# ==================================================
+with tab4:
 
-        except Exception as e:
-            st.error(f"SOS Error: {e}")
+    st.header("Registered Children")
 
-else:
-    st.info("No children registered yet.")
+    if children:
+        for c in children:
+            st.write(f"👶 {c['name']} | 📞 {c['phone_no']}")
+    else:
+        st.info("No data found")
