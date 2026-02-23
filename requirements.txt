@@ -1,10 +1,9 @@
 streamlit
-flask
 requests
 twilio
 streamlit-webrtc
-face_recognition
+speechrecognition
+face-recognition
 opencv-python
-numpy
-streamlit-geolocation
 av
+numpy
